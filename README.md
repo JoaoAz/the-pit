@@ -20,7 +20,7 @@ Blockout sem texturas para sentir a escala no óculos antes de investir em detal
 
 A estrutura (painéis, vigas, tubagens, máquinas) cresce com o diâmetro; os detalhes humanos não. É essa diferença que dá a escala.
 
-Os 4 estados de material e luz são parâmetros, por isso a transição mecânico ↔ clínico demora 4 s e não custa nada em performance.
+Os estados mecânico e clínico são só parâmetros de material, luz e nevoeiro, por isso a transição demora 4 s e não custa nada em performance.
 
 ## Correr no Quest 3
 
