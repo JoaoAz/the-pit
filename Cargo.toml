@@ -1,0 +1,20 @@
+[package]
+name = "the_pit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.19"
+bevy_mod_openxr = "0.6"
+bevy_mod_xr = "0.6"
+openxr = "0.21.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
