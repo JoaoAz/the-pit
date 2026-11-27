@@ -1,35 +1,55 @@
-//! Procedural blockout of the shaft, platform, bridge and scale references.
-//! Units are metres, Y is up, the platform walking surface is at y = 0.
+//! Procedural blockout of the shaft, the floating platform and scale references.
+//! Units are metres, Y is up, the platform surface is at y = 0.
+//!
+//! The shaft is monumental: its structure scales with the diameter, while the
+//! human-sized details on the walls (catwalks, doors, ladders, figures) stay human-sized,
+//! so they read as tiny and sell the size.
 
 use crate::meshbuild::{MeshBuilder, Rng};
 use bevy::prelude::*;
 use std::f32::consts::{PI, TAU};
 
 pub const SIDES: usize = 12;
-pub const MODULE_H: f32 = 30.0;
-pub const MODULES_EACH_WAY: i32 = 20;
-/// Module origin offset so the platform sits mid-module (ring beams at +14 and -16).
-pub const Z_OFF: f32 = -16.0;
 pub const PLATFORM_R: f32 = 6.0;
-pub const RAIL_H: f32 = 1.1;
+const RAIL_H: f32 = 1.1;
 
 /// Shaft sizes the participant can compare (apothem, i.e. centre to wall face).
-pub const SIZES: [(f32, &str); 3] = [(30.0, "60 m"), (45.0, "90 m"), (60.0, "120 m")];
+pub const SIZES: [(f32, &str); 3] = [(100.0, "200 m"), (200.0, "400 m"), (400.0, "800 m")];
+pub const DEFAULT_SIZE: usize = 1;
+
+/// Structure scale relative to the original 90 m concept.
+pub fn scale(apothem: f32) -> f32 {
+    apothem / 45.0
+}
+pub fn module_h(apothem: f32) -> f32 {
+    30.0 * scale(apothem)
+}
+/// Module origin offset so the platform floats between two ring beams.
+fn z_off(apothem: f32) -> f32 {
+    -0.53 * module_h(apothem)
+}
+/// Enough modules that both ends dissolve completely in the fog.
+const MODULES_EACH_WAY: i32 = 14;
+
+/// Fog density for a shaft size: the wall stays readable, the ends never show.
+pub fn fog_density(apothem: f32, mood: f32) -> f32 {
+    (0.45 + (0.32 - 0.45) * mood) / apothem
+}
 
 #[derive(Component)]
 pub struct ShaftPart;
 
 #[derive(Component)]
-pub struct MovingRing;
+pub struct MovingRing {
+    pub low: f32,
+    pub high: f32,
+}
 
 pub struct Mats {
     pub wall: Handle<StandardMaterial>,
     pub lamp: Handle<StandardMaterial>,
     pub lamp_alt: Handle<StandardMaterial>,
-    pub fixed: Handle<StandardMaterial>,
     pub figure: Handle<StandardMaterial>,
-    pub cap_top: Handle<StandardMaterial>,
-    pub cap_bottom: Handle<StandardMaterial>,
 }
 
 const GREY: [f32; 4] = [0.75, 0.75, 0.73, 1.0];
@@ -67,254 +87,188 @@ fn tone(rng: &mut Rng) -> [f32; 4] {
     [g + warm, g, g - warm, 1.0]
 }
 
-fn hazard_band(mb: &mut MeshBuilder, f: &Facet, u0: f32, u1: f32, v: f32, w: f32, h: f32) {
-    let n = ((u1 - u0) / 0.8).max(1.0) as i32;
+fn hazard_band(mb: &mut MeshBuilder, f: &Facet, u0: f32, u1: f32, v: f32, w: f32, h: f32, stripe: f32) {
+    let n = ((u1 - u0) / stripe).max(1.0) as i32;
     let step = (u1 - u0) / n as f32;
     for k in 0..n {
         let u = u0 + (k as f32 + 0.5) * step;
         let c = if k % 2 == 0 { HAZ_Y } else { HAZ_K };
-        mb.cuboid(f.p(u, v, w), f.ax(), [step / 2.0, h, 0.05], c);
+        mb.cuboid(f.p(u, v, w), f.ax(), [step / 2.0, h, 0.05 * h.max(1.0)], c);
     }
 }
 
-/// One 30 m module. `var` changes the random dressing; pipes are shared so they run continuously.
+/// One module. `var` changes the random dressing; spine pipes are shared so they run continuously.
 fn build_module(apothem: f32, var: u64) -> (Mesh, Mesh, Mesh) {
+    let s = scale(apothem);
     let w_face = 2.0 * apothem * (PI / SIDES as f32).tan();
+    let h = module_h(apothem);
     let mut solid = MeshBuilder::default();
     let mut lamps = MeshBuilder::default();
     let mut lamps_alt = MeshBuilder::default();
     let mut rng = Rng::new(100 + var);
     let mut spine = Rng::new(7);
-    let h = MODULE_H;
 
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
         let ax = f.ax();
         // back wall
-        solid.cuboid(f.p(0.0, h / 2.0, -0.5), ax, [w_face / 2.0 + 1.0, h / 2.0, 0.5], DARK);
+        solid.cuboid(f.p(0.0, h / 2.0, -0.5 * s), ax, [w_face / 2.0 + s, h / 2.0, 0.5 * s], DARK);
         // panel grid
-        let ncol = rng.int(3, 6);
+        let ncol = (rng.int(3, 6) as f32 * s.sqrt()).round().max(3.0) as u32;
         let cw = w_face / ncol as f32;
         for c in 0..ncol {
             let mut v = 0.0;
-            while v < h - 0.5 {
-                let ph = [2.0f32, 3.0, 4.0, 5.0, 7.5][rng.int(0, 4) as usize].min(h - v);
-                let dep = rng.range(0.1, 0.9);
+            while v < h - 0.5 * s {
+                let ph = ([2.0f32, 3.0, 4.0, 5.0, 7.5][rng.int(0, 4) as usize] * s).min(h - v);
+                let dep = rng.range(0.1, 0.9) * s;
                 let u = -w_face / 2.0 + cw * (c as f32 + 0.5);
-                solid.cuboid(f.p(u, v + ph / 2.0, dep / 2.0), ax, [cw / 2.0 - 0.06, ph / 2.0 - 0.06, dep / 2.0], tone(&mut rng));
+                let gap = 0.06 * s;
+                solid.cuboid(f.p(u, v + ph / 2.0, dep / 2.0), ax, [cw / 2.0 - gap, ph / 2.0 - gap, dep / 2.0], tone(&mut rng));
                 v += ph;
             }
         }
         // corner column
-        solid.cuboid(f.p(w_face / 2.0, h / 2.0, 2.6), ax, [2.4, h / 2.0, 2.6], DARK);
+        solid.cuboid(f.p(w_face / 2.0, h / 2.0, 2.6 * s), ax, [2.4 * s, h / 2.0, 2.6 * s], DARK);
         for k in 0..7 {
-            solid.cuboid(f.p(w_face / 2.0, 2.0 + k as f32 * 4.0, 5.4), ax, [1.5, 0.25, 0.25], GREY);
+            solid.cuboid(f.p(w_face / 2.0, (2.0 + k as f32 * 4.0) * s, 5.4 * s), ax, [1.5 * s, 0.25 * s, 0.25 * s], GREY);
         }
-        // ring beam with lamp fixtures (the 30 m rhythm)
-        solid.cuboid(f.p(0.0, h - 1.3, 3.0), ax, [w_face / 2.0 + 1.5, 1.3, 3.0], GREY);
-        hazard_band(&mut solid, &f, -w_face / 2.0, w_face / 2.0, h - 0.4, 6.05, 0.4);
-        for g in 0..10 {
-            let u = -w_face / 2.0 + 1.2 + (g as f32 + 0.5) * (w_face - 2.4) / 10.0;
+        // ring beam with lamp fixtures (the module rhythm)
+        solid.cuboid(f.p(0.0, h - 1.3 * s, 3.0 * s), ax, [w_face / 2.0 + 1.5 * s, 1.3 * s, 3.0 * s], GREY);
+        hazard_band(&mut solid, &f, -w_face / 2.0, w_face / 2.0, h - 0.4 * s, 6.05 * s, 0.4 * s, 0.8 * s);
+        let nl = (10.0 * s.sqrt()) as i32;
+        for g in 0..nl {
+            let u = -w_face / 2.0 + 1.2 * s + (g as f32 + 0.5) * (w_face - 2.4 * s) / nl as f32;
             if rng.chance(0.88) {
-                lamps.cuboid(f.p(u, h - 2.65, 5.6), ax, [0.55, 0.06, 0.12], WHITE);
+                lamps.cuboid(f.p(u, h - 2.65 * s, 5.6 * s), ax, [0.55 * s, 0.06 * s, 0.12 * s], WHITE);
             }
         }
         // spine pipes (same on every module)
-        for _ in 0..spine.int(2, 5) {
-            let r = [0.2, 0.3, 0.45, 0.7, 1.0, 1.4][spine.int(0, 5) as usize];
-            let u = spine.range(-w_face / 2.0 + 2.0, w_face / 2.0 - 2.0);
-            let w = 1.2 + r + spine.range(0.0, 1.5);
+        for _ in 0..spine.int(3, 7) {
+            let r = [0.2, 0.3, 0.45, 0.7, 1.0, 1.4][spine.int(0, 5) as usize] * s;
+            let u = spine.range(-w_face / 2.0 + 3.0 * s, w_face / 2.0 - 3.0 * s);
+            let w = 1.2 * s + r + spine.range(0.0, 1.5) * s;
             let c = tone(&mut spine);
             solid.cylinder(f.p(u, 0.0, w), f.p(u, h, w), r, 12, c);
             for v in [5.0, 15.0, 25.0] {
-                solid.cuboid(f.p(u, v, w / 2.0), ax, [r * 0.6, 0.25, w / 2.0], DARK);
+                solid.cuboid(f.p(u, v * s, w / 2.0), ax, [r * 0.6, 0.25 * s, w / 2.0], DARK);
             }
         }
-        // machinery housings: the "large" tier of the scale hierarchy
-        for _ in 0..rng.int(0, 2) {
-            let (hu, hv, hw) = (rng.range(2.5, 5.5), rng.range(2.5, 7.0), rng.range(1.5, 4.0));
-            let u = rng.range(-w_face / 2.0 + hu + 2.5, w_face / 2.0 - hu - 2.5);
-            let v = rng.range(hv + 1.0, h - hv - 3.0);
-            solid.cuboid(f.p(u, v, 0.8 + hw), ax, [hu, hv, hw], tone(&mut rng));
-            hazard_band(&mut solid, &f, u - hu, u + hu, v + hv + 0.15, 0.8 + 2.0 * hw + 0.05, 0.15);
+        // machinery housings: the large tier
+        for _ in 0..rng.int(1, 3) {
+            let (hu, hv, hw) = (rng.range(2.5, 5.5) * s, rng.range(2.5, 7.0) * s, rng.range(1.5, 4.0) * s);
+            let u = rng.range(-w_face / 2.0 + hu + 2.5 * s, w_face / 2.0 - hu - 2.5 * s);
+            let v = rng.range(hv + s, h - hv - 3.0 * s);
+            solid.cuboid(f.p(u, v, 0.8 * s + hw), ax, [hu, hv, hw], tone(&mut rng));
+            hazard_band(&mut solid, &f, u - hu, u + hu, v + hv + 0.15 * s, 0.8 * s + 2.0 * hw + 0.05 * s, 0.15 * s, 0.8 * s);
             if rng.chance(0.7) {
-                lamps_alt.cuboid(f.p(u + hu * 0.55, v + hv * 0.5, 0.8 + 2.0 * hw + 0.1), ax, [hu * 0.25, 0.25, 0.05], WHITE);
+                lamps_alt.cuboid(f.p(u + hu * 0.55, v + hv * 0.5, 0.8 * s + 2.0 * hw + 0.1 * s), ax, [hu * 0.25, 0.25 * s, 0.05 * s], WHITE);
             }
         }
-        // greebles: the "small" tier
-        for _ in 0..rng.int(40, 70) {
-            let u = rng.range(-w_face / 2.0 + 0.5, w_face / 2.0 - 0.5);
-            let v = rng.range(0.5, h - 2.5);
-            let s = rng.range(0.15f32.ln(), 2.5f32.ln()).exp();
-            let (hu, hv, hw) = (s * rng.range(0.4, 1.4), s * rng.range(0.3, 1.0), s * rng.range(0.15, 0.6));
-            let w0 = rng.range(0.3, 1.0);
+        // greebles: medium and small tiers (absolute small sizes stay, so close detail exists)
+        let n_greeble = ((55.0 * s) as u32).min(420);
+        for _ in 0..n_greeble {
+            let u = rng.range(-w_face / 2.0 + 0.5 * s, w_face / 2.0 - 0.5 * s);
+            let v = rng.range(0.5 * s, h - 2.5 * s);
+            let sz = rng.range(0.4f32.ln(), (2.5 * s).ln()).exp();
+            let (hu, hv, hw) = (sz * rng.range(0.4, 1.4), sz * rng.range(0.3, 1.0), sz * rng.range(0.15, 0.6));
+            let w0 = rng.range(0.3, 1.0) * s;
             solid.cuboid(f.p(u, v, w0 + hw), ax, [hu, hv, hw], tone(&mut rng));
         }
-        // lit readout panels
-        for _ in 0..rng.int(2, 6) {
-            let u = rng.range(-w_face / 2.0 + 2.0, w_face / 2.0 - 2.0);
-            let v = rng.range(1.0, h - 4.0);
-            let (nx, ny) = (rng.int(1, 5), rng.int(1, 3));
-            let cell = rng.range(0.2, 0.45);
-            solid.cuboid(f.p(u, v, 1.05), ax, [nx as f32 * cell * 0.6 + 0.15, ny as f32 * cell * 0.6 + 0.15, 0.15], DARK);
+        // lit window bands and readouts
+        for _ in 0..(rng.int(2, 6) as f32 * s.sqrt()) as u32 {
+            let u = rng.range(-w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s);
+            let v = rng.range(s, h - 4.0 * s);
+            let (nx, ny) = (rng.int(1, 6), rng.int(1, 3));
+            let cell = rng.range(0.2, 0.45) * s;
+            solid.cuboid(f.p(u, v, 1.05 * s), ax, [nx as f32 * cell * 0.6 + 0.15 * s, ny as f32 * cell * 0.6 + 0.15 * s, 0.15 * s], DARK);
             for a in 0..nx {
                 for b in 0..ny {
                     let uu = u + (a as f32 - (nx - 1) as f32 / 2.0) * cell * 1.15;
                     let vv = v + (b as f32 - (ny - 1) as f32 / 2.0) * cell * 1.15;
                     let target = if rng.chance(0.6) { &mut lamps_alt } else { &mut lamps };
-                    target.cuboid(f.p(uu, vv, 1.22), ax, [cell * 0.45, cell * 0.4, 0.03], WHITE);
+                    target.cuboid(f.p(uu, vv, 1.22 * s), ax, [cell * 0.45, cell * 0.4, 0.03 * s], WHITE);
                 }
             }
         }
         // vents
-        if rng.chance(0.5) {
+        for _ in 0..rng.int(0, 2) {
             let (vw, vh) = [(5.0, 3.0), (7.0, 4.0), (4.0, 6.0)][rng.int(0, 2) as usize];
-            let u = rng.range(-w_face / 2.0 + vw / 2.0 + 2.0, w_face / 2.0 - vw / 2.0 - 2.0);
-            let vc = rng.range(3.0, h - vh - 4.0) + vh / 2.0;
-            lamps_alt.cuboid(f.p(u, vc, 0.75), ax, [vw / 2.0, vh / 2.0, 0.05], WHITE);
-            let ns = (vh / 0.45) as i32;
-            for s in 0..ns {
-                let vs = vc - vh / 2.0 + (s as f32 + 0.5) * vh / ns as f32;
-                solid.cuboid(f.p(u, vs, 1.2), ax, [vw / 2.0, 0.04, 0.25], DARK);
+            let (vw, vh) = (vw * s, vh * s);
+            let u = rng.range(-w_face / 2.0 + vw / 2.0 + 2.0 * s, w_face / 2.0 - vw / 2.0 - 2.0 * s);
+            let vc = rng.range(3.0 * s, h - vh - 4.0 * s) + vh / 2.0;
+            lamps_alt.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], WHITE);
+            let ns = 7;
+            for k in 0..ns {
+                let vs = vc - vh / 2.0 + (k as f32 + 0.5) * vh / ns as f32;
+                solid.cuboid(f.p(u, vs, 1.2 * s), ax, [vw / 2.0, 0.04 * s, 0.25 * s], DARK);
             }
-            hazard_band(&mut solid, &f, u - vw / 2.0 - 0.5, u + vw / 2.0 + 0.5, vc - vh / 2.0 - 0.3, 1.25, 0.3);
+            hazard_band(&mut solid, &f, u - vw / 2.0 - 0.5 * s, u + vw / 2.0 + 0.5 * s, vc - vh / 2.0 - 0.3 * s, 1.25 * s, 0.3 * s, 0.8 * s);
         }
-        // catwalk with railing, door and ladder on every other module (human-scale cues)
+        // human-sized catwalk, doors and ladder: kept at real size on purpose
         if var % 2 == 0 {
-            let v = 12.0;
-            solid.cuboid(f.p(0.0, v, 4.0), ax, [w_face / 2.0 + 0.9, 0.08, 1.8], DARK);
-            hazard_band(&mut solid, &f, -w_face / 2.0 - 0.9, w_face / 2.0 + 0.9, v - 0.25, 5.8, 0.18);
-            solid.cylinder(f.p(-w_face / 2.0 - 0.9, v + RAIL_H, 5.7), f.p(w_face / 2.0 + 0.9, v + RAIL_H, 5.7), 0.04, 6, HAZ_Y);
+            let v = 0.4 * h;
+            let wc = 1.2 * s + 1.0; // just in front of the panels
+            solid.cuboid(f.p(0.0, v, wc + 1.0), ax, [w_face / 2.0 + 2.0 * s, 0.08, 1.0], DARK);
+            hazard_band(&mut solid, &f, -w_face / 2.0, w_face / 2.0, v - 0.2, wc + 2.0, 0.12, 0.8);
+            solid.cylinder(f.p(-w_face / 2.0, v + RAIL_H, wc + 1.95), f.p(w_face / 2.0, v + RAIL_H, wc + 1.95), 0.04, 6, HAZ_Y);
             let mut u = -w_face / 2.0;
             while u < w_face / 2.0 {
-                solid.cylinder(f.p(u, v, 5.7), f.p(u, v + RAIL_H, 5.7), 0.035, 6, HAZ_Y);
+                solid.cylinder(f.p(u, v, wc + 1.95), f.p(u, v + RAIL_H, wc + 1.95), 0.035, 6, HAZ_Y);
                 u += 1.8;
             }
-            // 2.1 m door
-            let du = rng.range(-w_face / 2.0 + 4.0, w_face / 2.0 - 4.0);
-            solid.cuboid(f.p(du, v + 1.05, 1.0), ax, [0.6, 1.05, 0.1], DARK);
-            solid.cuboid(f.p(du, v + 2.25, 1.05), ax, [0.8, 0.15, 0.15], HAZ_Y);
-            lamps.cuboid(f.p(du + 0.9, v + 1.4, 1.1), ax, [0.08, 0.08, 0.03], WHITE);
-            // ladder to the next level
-            let lu = du + 3.0;
-            for s in [-0.25f32, 0.25] {
-                solid.cylinder(f.p(lu + s, v, 1.3), f.p(lu + s, h - 2.6, 1.3), 0.03, 6, GREY);
+            for _ in 0..3 {
+                let du = rng.range(-w_face / 2.0 + 4.0, w_face / 2.0 - 4.0);
+                solid.cuboid(f.p(du, v + 1.05, wc - 0.05), ax, [0.6, 1.05, 0.1], DARK);
+                solid.cuboid(f.p(du, v + 2.25, wc), ax, [0.8, 0.15, 0.15], HAZ_Y);
+                lamps.cuboid(f.p(du + 0.9, v + 1.4, wc + 0.05), ax, [0.08, 0.08, 0.03], WHITE);
+            }
+            let lu = rng.range(-w_face / 3.0, w_face / 3.0);
+            for side in [-0.25f32, 0.25] {
+                solid.cylinder(f.p(lu + side, v, wc + 0.3), f.p(lu + side, h + v, wc + 0.3), 0.03, 6, GREY);
             }
             let mut rv = v + 0.3;
-            while rv < h - 2.6 {
-                solid.cylinder(f.p(lu - 0.25, rv, 1.3), f.p(lu + 0.25, rv, 1.3), 0.02, 4, GREY);
-                rv += 0.3;
+            while rv < h + v {
+                solid.cylinder(f.p(lu - 0.25, rv, wc + 0.3), f.p(lu + 0.25, rv, wc + 0.3), 0.02, 4, GREY);
+                rv += 0.3 * (s.sqrt()); // rungs merge into a line from afar anyway
             }
         }
     }
     (solid.build(), lamps.build(), lamps_alt.build())
 }
 
-fn build_platform(apothem: f32) -> (Mesh, Mesh) {
+/// The platform: a plain floating disc, nothing on it.
+fn build_platform() -> Mesh {
     let mut s = MeshBuilder::default();
-    let mut l = MeshBuilder::default();
-    let id = [Vec3::X, Vec3::Y, Vec3::Z];
-    let pr = PLATFORM_R;
-    s.cylinder(Vec3::new(0.0, -0.7, 0.0), Vec3::new(0.0, 0.0, 0.0), pr, 48, GREY);
-    s.cylinder(Vec3::new(0.0, -0.75, 0.0), Vec3::new(0.0, -0.66, 0.0), pr + 0.25, 48, HAZ_Y);
-    s.cylinder(Vec3::new(0.0, -4.0, 0.0), Vec3::new(0.0, -0.7, 0.0), 2.2, 24, DARK);
-    s.cylinder(Vec3::new(0.0, -7.0, 0.0), Vec3::new(0.0, -4.0, 0.0), 1.0, 16, DARK);
-    // deck seams so the floor reads at close range
-    for k in 0..8 {
-        let a = k as f32 * PI / 8.0;
-        let d = Vec3::new(a.cos(), 0.0, a.sin());
-        s.cuboid(Vec3::new(0.0, 0.003, 0.0), [d, Vec3::Y, d.cross(Vec3::Y)], [pr - 0.1, 0.003, 0.012], DARK);
-    }
-    // railing, open towards the bridge (-Z)
-    let gap = |th: f32| {
-        let d = (th - (-PI / 2.0)).rem_euclid(TAU);
-        d < 0.2 || d > TAU - 0.2
-    };
-    let posts = 28;
-    for k in 0..posts {
-        let th = TAU * k as f32 / posts as f32;
-        if gap(th) {
-            continue;
-        }
-        let p = Vec3::new(th.cos(), 0.0, th.sin()) * (pr - 0.2);
-        s.cylinder(p, p + Vec3::Y * RAIL_H, 0.035, 8, HAZ_Y);
-    }
-    for (hh, rr) in [(RAIL_H, 0.045), (0.6, 0.03)] {
-        let seg = 72;
-        for k in 0..seg {
-            let (a0, a1) = (TAU * k as f32 / seg as f32, TAU * (k + 1) as f32 / seg as f32);
-            if gap((a0 + a1) / 2.0) {
-                continue;
-            }
-            let p0 = Vec3::new(a0.cos(), 0.0, a0.sin()) * (pr - 0.2) + Vec3::Y * hh;
-            let p1 = Vec3::new(a1.cos(), 0.0, a1.sin()) * (pr - 0.2) + Vec3::Y * hh;
-            s.cylinder(p0, p1, rr, 8, HAZ_Y);
-        }
-    }
-    // console (1.1 m desk)
-    s.cuboid(Vec3::new(0.0, 0.55, 1.8), id, [1.4, 0.55, 0.5], GREY);
-    for q in 0..5 {
-        l.cuboid(Vec3::new(-1.0 + q as f32 * 0.5, 1.12, 1.7), id, [0.18, 0.02, 0.1], WHITE);
-    }
-    // 1 m crate, a familiar object
-    s.cuboid(Vec3::new(-3.2, 0.5, -1.5), id, [0.5, 0.5, 0.5], tone(&mut Rng::new(3)));
-    // bridge to the wall along -Z
-    let (z0, z1) = (-pr + 0.3, -apothem + 1.0);
-    let bw = 1.5;
-    let zm = (z0 + z1) / 2.0;
-    let half = (z1 - z0).abs() / 2.0;
-    s.cuboid(Vec3::new(0.0, -0.15, zm), id, [bw, 0.15, half], GREY);
-    for sx in [-1.0f32, 1.0] {
-        s.cylinder(Vec3::new(sx * bw, RAIL_H, z0), Vec3::new(sx * bw, RAIL_H, z1), 0.045, 8, HAZ_Y);
-        s.cylinder(Vec3::new(sx * bw, -2.4, z0), Vec3::new(sx * bw, -2.4, z1), 0.2, 8, DARK);
-        let nseg = ((z0 - z1).abs() / 2.5) as i32;
-        for k in 0..=nseg {
-            let z = z0 + (z1 - z0) * k as f32 / nseg as f32;
-            s.cylinder(Vec3::new(sx * bw, -2.4, z), Vec3::new(sx * bw, RAIL_H, z), 0.05, 6, HAZ_Y);
-            if k < nseg {
-                let zn = z0 + (z1 - z0) * (k + 1) as f32 / nseg as f32;
-                s.cylinder(Vec3::new(sx * bw, -2.4, z), Vec3::new(sx * bw, -0.2, zn), 0.06, 6, DARK);
-            }
-        }
-        for k in 0..8 {
-            let z = z0 + (z1 - z0) * (k as f32 + 0.5) / 8.0;
-            l.cuboid(Vec3::new(sx * (bw + 0.05), -0.45, z), id, [0.05, 0.05, 0.15], WHITE);
-        }
-    }
-    // underside lights so the platform reads as an object from far away
-    for k in 0..12 {
-        let a = k as f32 * PI / 6.0;
-        let d = Vec3::new(a.cos(), 0.0, a.sin());
-        l.cuboid(d * 5.6 + Vec3::Y * -0.9, [d, Vec3::Y, d.cross(Vec3::Y)], [0.12, 0.08, 0.3], WHITE);
-    }
-    (s.build(), l.build())
+    s.cylinder(Vec3::new(0.0, -0.5, 0.0), Vec3::ZERO, PLATFORM_R, 64, GREY);
+    s.cylinder(Vec3::new(0.0, -0.9, 0.0), Vec3::new(0.0, -0.5, 0.0), PLATFORM_R - 0.4, 64, DARK);
+    s.build()
 }
 
 fn build_ring(apothem: f32) -> (Mesh, Mesh) {
+    let s = scale(apothem);
     let w_face = 2.0 * apothem * (PI / SIDES as f32).tan();
-    let depth = (apothem * 0.33).min(15.0);
-    let mut s = MeshBuilder::default();
+    let depth = 15.0 * s;
+    let mut m = MeshBuilder::default();
     let mut l = MeshBuilder::default();
     let mut rng = Rng::new(77);
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
         let ax = f.ax();
-        s.cuboid(f.p(0.0, 0.0, 4.5 + depth / 2.0), ax, [w_face / 2.0 - 1.0, 3.0, depth / 2.0], GREY);
-        hazard_band(&mut s, &f, -w_face * 0.3, w_face * 0.3, -3.2, 4.5 + depth + 0.06, 0.4);
-        for _ in 0..25 {
+        m.cuboid(f.p(0.0, 0.0, 4.5 * s + depth / 2.0), ax, [w_face / 2.0 - s, 3.0 * s, depth / 2.0], GREY);
+        hazard_band(&mut m, &f, -w_face * 0.3, w_face * 0.3, -3.2 * s, 4.5 * s + depth + 0.06 * s, 0.4 * s, 0.8 * s);
+        for _ in 0..40 {
             let u = rng.range(-w_face * 0.35, w_face * 0.35);
-            let sz = rng.range(0.3, 1.6);
+            let sz = rng.range(0.3, 1.6) * s;
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
-            s.cuboid(f.p(u, side * (3.0 + sz * 0.3), rng.range(5.0, 4.5 + depth)), ax, [sz, sz * 0.3, sz * 0.8], tone(&mut rng));
+            m.cuboid(f.p(u, side * (3.0 * s + sz * 0.3), rng.range(5.0 * s, 4.5 * s + depth)), ax, [sz, sz * 0.3, sz * 0.8], tone(&mut rng));
         }
         for k in 0..6 {
             let u = -w_face * 0.3 + k as f32 * w_face * 0.12;
-            l.cuboid(f.p(u, -3.05, 4.5 + depth * 0.7), ax, [0.5, 0.05, 0.5], WHITE);
+            l.cuboid(f.p(u, -3.05 * s, 4.5 * s + depth * 0.7), ax, [0.5 * s, 0.05 * s, 0.5 * s], WHITE);
         }
-        // guide rail in the wall corner
-        s.cuboid(f.p(w_face / 2.0 - 1.5, 0.0, 3.4), ax, [0.6, 3.5, 0.4], DARK);
+        m.cuboid(f.p(w_face / 2.0 - 1.5 * s, 0.0, 3.4 * s), ax, [0.6 * s, 3.5 * s, 0.4 * s], DARK);
     }
-    (s.build(), l.build())
+    (m.build(), l.build())
 }
 
 fn figure(meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
@@ -328,13 +282,11 @@ fn figure(meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
 }
 
 /// Spawns everything that depends on the shaft size. Called again when the size changes.
-pub fn spawn_shaft(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    mats: &Mats,
-    apothem: f32,
-) {
+pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats, apothem: f32) {
     const VARIANTS: u64 = 4;
+    let s = scale(apothem);
+    let h = module_h(apothem);
+    let zo = z_off(apothem);
     let mods: Vec<(Handle<Mesh>, Handle<Mesh>, Handle<Mesh>)> = (0..VARIANTS)
         .map(|v| {
             let (a, b, c) = build_module(apothem, v);
@@ -343,57 +295,45 @@ pub fn spawn_shaft(
         .collect();
     let mut pick = Rng::new(3);
     for k in -MODULES_EACH_WAY..=MODULES_EACH_WAY {
-        let v = if k == -1 { 0 } else { (pick.next_u64() % VARIANTS) as usize };
-        let t = Transform::from_xyz(0.0, k as f32 * MODULE_H + Z_OFF, 0.0);
+        let v = if k == 0 { 0 } else { (pick.next_u64() % VARIANTS) as usize };
+        let t = Transform::from_xyz(0.0, k as f32 * h + zo, 0.0);
         let (a, b, c) = &mods[v];
         commands.spawn((ShaftPart, Mesh3d(a.clone()), MeshMaterial3d(mats.wall.clone()), t));
         commands.spawn((ShaftPart, Mesh3d(b.clone()), MeshMaterial3d(mats.lamp.clone()), t));
         commands.spawn((ShaftPart, Mesh3d(c.clone()), MeshMaterial3d(mats.lamp_alt.clone()), t));
     }
-    // glowing ends: the far "infinite" stays a colour, never a floor or ceiling
-    let span = MODULES_EACH_WAY as f32 * MODULE_H;
-    let cap = meshes.add(Cylinder::new(apothem + 6.0, 1.0));
-    commands.spawn((ShaftPart, Mesh3d(cap.clone()), MeshMaterial3d(mats.cap_top.clone()), Transform::from_xyz(0.0, span + MODULE_H, 0.0)));
-    commands.spawn((ShaftPart, Mesh3d(cap), MeshMaterial3d(mats.cap_bottom.clone()), Transform::from_xyz(0.0, -span, 0.0)));
 
-    let (p, pl) = build_platform(apothem);
-    commands.spawn((ShaftPart, Mesh3d(meshes.add(p)), MeshMaterial3d(mats.wall.clone())));
-    commands.spawn((ShaftPart, Mesh3d(meshes.add(pl)), MeshMaterial3d(mats.fixed.clone())));
+    commands.spawn((ShaftPart, Mesh3d(meshes.add(build_platform())), MeshMaterial3d(mats.wall.clone())));
 
-    // scale references: 1.8 m figures at known distances
+    // 1.8 m figures on the wall catwalk of the module the platform floats in (k = 0)
     let fig = figure(meshes);
-    let catwalk_y = -MODULE_H + Z_OFF + 12.0 + 0.08; // module k = -1 has a catwalk
-    let refs = [
-        Vec3::new(2.5, 0.0, -1.0),                     // on the platform, ~3 m
-        Vec3::new(0.6, 0.0, -apothem + 2.0),           // end of the bridge
-        Vec3::new(-2.0, catwalk_y, apothem - 4.5),     // opposite catwalk, below
-        Facet::new(1, apothem).p(0.0, Z_OFF + MODULE_H, 3.0),  // on top of the ring beam above
-    ];
-    for p in refs {
+    let catwalk_y = zo + 0.4 * h + 0.08;
+    let wc = 1.2 * s + 1.0;
+    for i in [0usize, 3, 7] {
+        let p = Facet::new(i, apothem).p(1.5, catwalk_y, wc + 1.0);
         commands.spawn((ShaftPart, Mesh3d(fig.clone()), MeshMaterial3d(mats.figure.clone()), Transform::from_translation(p).looking_at(Vec3::new(0.0, p.y, 0.0), Vec3::Y)));
     }
 
     // the moving ring used to test vection comfort
     let (r, rl) = build_ring(apothem);
+    let (low, high) = (zo + h + 6.0 * s, zo + 4.0 * h);
     commands
-        .spawn((ShaftPart, MovingRing, Transform::from_xyz(0.0, 120.0, 0.0), Visibility::default()))
+        .spawn((ShaftPart, MovingRing { low, high }, Transform::from_xyz(0.0, high, 0.0), Visibility::default()))
         .with_children(|c| {
             c.spawn((Mesh3d(meshes.add(r)), MeshMaterial3d(mats.wall.clone())));
             c.spawn((Mesh3d(meshes.add(rl)), MeshMaterial3d(mats.lamp.clone())));
         });
 
-    // a few real lights near the platform; everything far is emissive only
-    for (i, y) in [(0usize, 14.0f32), (4, -16.0), (8, 14.0), (2, -16.0), (6, 14.0), (10, -16.0)] {
-        let f = Facet::new(i, apothem);
-        commands.spawn((
-            ShaftPart,
-            PointLight { intensity: 2.0e7, range: apothem * 2.5, radius: 1.0, shadow_maps_enabled: false, ..default() },
-            Transform::from_translation(f.p(0.0, y - 2.0, 7.0)),
-        ));
+    // a few real lights on the nearest ring beams; everything else is emissive only
+    for k in [0i32, 1] {
+        for i in (0..SIDES).step_by(2) {
+            let f = Facet::new(i + k as usize, apothem);
+            let y = zo + k as f32 * h - 3.0 * s;
+            commands.spawn((
+                ShaftPart,
+                PointLight { intensity: 2.0e7 * s * s, range: apothem * 2.5, radius: s, shadow_maps_enabled: false, ..default() },
+                Transform::from_translation(f.p(0.0, y, 7.0 * s)),
+            ));
+        }
     }
-    commands.spawn((
-        ShaftPart,
-        PointLight { intensity: 6.0e5, range: 25.0, radius: 0.5, shadow_maps_enabled: true, ..default() },
-        Transform::from_xyz(0.0, 9.0, 0.0),
-    ));
 }

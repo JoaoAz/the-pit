@@ -2,7 +2,7 @@
 //!
 //! Run without arguments to start in VR (OpenXR, e.g. Quest 3 over Link).
 //! `--desktop` opens a normal window with a mouse-look camera.
-//! `--shot <file.png> --view <up|down|wide|ring|clinical>` renders one desktop frame and exits.
+//! `--shot <file.png> --view <wide|up|down|far|ring|clinical>` renders one desktop frame and exits.
 
 mod meshbuild;
 mod shaft;
@@ -85,7 +85,7 @@ fn main() -> AppExit {
     }
     let start_mood = if args.view == "clinical" { 1.0 } else { 0.0 };
     app.insert_resource(Mood { current: start_mood, target: start_mood })
-        .insert_resource(Size(1))
+        .insert_resource(Size(shaft::DEFAULT_SIZE))
         .insert_resource(RingMotion { moving: args.view == "ring", dir: -1.0 })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(FrameCount::default())
@@ -116,10 +116,7 @@ fn setup(
         wall: materials.add(StandardMaterial { base_color: Color::srgb(0.3, 0.28, 0.24), perceptual_roughness: 0.8, metallic: 0.2, ..default() }),
         lamp: lamp(&mut materials, Color::srgb(1.0, 0.75, 0.45)),
         lamp_alt: lamp(&mut materials, Color::srgb(1.0, 0.45, 0.15)),
-        fixed: lamp(&mut materials, Color::srgb(1.0, 0.9, 0.7)),
         figure: materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.6, ..default() }),
-        cap_top: lamp(&mut materials, Color::srgb(0.4, 0.6, 1.0)),
-        cap_bottom: lamp(&mut materials, Color::srgb(1.0, 0.35, 0.08)),
     };
     shaft::spawn_shaft(&mut commands, &mut meshes, &m, SIZES[size.0].0);
     commands.insert_resource(Materials { m });
@@ -127,28 +124,33 @@ fn setup(
     if args.desktop {
         let (pos, yaw, pitch) = match args.view.as_str() {
             "up" => (Vec3::new(0.5, 1.7, 2.6), 0.2, 1.35),
-            "down" => (Vec3::new(1.6, 1.6, 6.4), 0.3, -1.2),
-            "ring" => (Vec3::new(2.0, 1.7, 3.5), 0.1, 0.35),
-            "clinical" => (Vec3::new(-4.0, 1.7, 3.0), 0.5, 0.25),
-            _ => (Vec3::new(6.0, 17.0, apothem_cam()), 0.12, -0.38),
+            "down" => (Vec3::new(4.7, 1.6, 4.7), 0.8, -1.15),
+            "ring" => (Vec3::new(2.0, 1.7, 3.5), 0.1, 0.45),
+            "clinical" => (Vec3::new(-2.0, 1.7, 2.0), 0.5, 0.15),
+            "far" => (Vec3::new(0.0, 25.0, 60.0), 0.0, -0.3),
+            _ => (Vec3::new(0.0, 1.7, 4.0), 0.0, 0.05),
         };
         commands.spawn((
             Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection { fov: 100f32.to_radians(), far: 3000.0, ..default() }),
+            Projection::Perspective(PerspectiveProjection { fov: 100f32.to_radians(), far: 50000.0, ..default() }),
             Transform::from_translation(pos),
             DesktopCam { yaw, pitch },
-            fog(0.0),
+            fog(0.0, SIZES[size.0].0),
         ));
     }
 }
 
-fn fog(mood: f32) -> DistanceFog {
+fn fog_color(mood: f32) -> Color {
     let mech = Vec3::new(0.10, 0.07, 0.04);
     let clin = Vec3::new(0.62, 0.70, 0.76);
     let c = mech.lerp(clin, mood);
+    Color::srgb(c.x, c.y, c.z)
+}
+
+fn fog(mood: f32, apothem: f32) -> DistanceFog {
     DistanceFog {
-        color: Color::srgb(c.x, c.y, c.z),
-        falloff: FogFalloff::Exponential { density: 0.006 + (0.0035 - 0.006) * mood },
+        color: fog_color(mood),
+        falloff: FogFalloff::Exponential { density: shaft::fog_density(apothem, mood) },
         ..default()
     }
 }
@@ -157,9 +159,10 @@ fn add_fog_to_xr_cameras(
     mut commands: Commands,
     cams: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
     mood: Res<Mood>,
+    size: Res<Size>,
 ) {
     for e in &cams {
-        commands.entity(e).insert(fog(mood.current));
+        commands.entity(e).insert(fog(mood.current, SIZES[size.0].0));
     }
 }
 
@@ -195,12 +198,14 @@ fn apply_mood(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fogs: Query<&mut DistanceFog>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    mut clear: ResMut<ClearColor>,
+    size: Res<Size>,
     mut first: Local<bool>,
 ) {
     let step = time.delta_secs() / 4.0; // 4 s transition
     let before = mood.current;
     mood.current += (mood.target - mood.current).clamp(-step, step);
-    if before == mood.current && *first {
+    if before == mood.current && *first && !size.is_changed() {
         return;
     }
     *first = true;
@@ -220,30 +225,27 @@ fn apply_mood(
     if let Some(mut m) = materials.get_mut(&mats.m.lamp_alt) {
         m.base_color = mix(Vec3::new(1.0, 0.45, 0.15), Vec3::new(0.55, 0.85, 1.0));
     }
-    if let Some(mut m) = materials.get_mut(&mats.m.cap_bottom) {
-        m.base_color = mix(Vec3::new(1.0, 0.35, 0.08), Vec3::new(0.9, 0.95, 1.0));
-    }
-    if let Some(mut m) = materials.get_mut(&mats.m.cap_top) {
-        m.base_color = mix(Vec3::new(0.4, 0.6, 1.0), Vec3::new(1.0, 1.0, 1.0));
-    }
     for mut f in &mut fogs {
-        *f = fog(t);
+        *f = fog(t, SIZES[size.0].0);
     }
+    // the empty space beyond the last module is the fog colour: no visible end
+    clear.0 = fog_color(t);
     ambient.color = mix(Vec3::new(1.0, 0.8, 0.6), Vec3::new(0.9, 0.95, 1.0));
     ambient.brightness = 40.0 + (900.0 - 40.0) * t;
 }
 
-fn move_ring(time: Res<Time>, mut ring: ResMut<RingMotion>, mut q: Query<&mut Transform, With<MovingRing>>) {
+fn move_ring(time: Res<Time>, mut ring: ResMut<RingMotion>, size: Res<Size>, mut q: Query<(&mut Transform, &MovingRing)>) {
     if !ring.moving {
         return;
     }
-    // 1.5 m/s: slow enough to read as a machine, not as the world moving
-    for mut t in &mut q {
-        t.translation.y += ring.dir * 1.5 * time.delta_secs();
-        if t.translation.y < 12.0 {
+    // slow for its size, so it reads as a machine and not as the world moving
+    let speed = 2.0 * shaft::scale(SIZES[size.0].0).sqrt();
+    for (mut t, r) in &mut q {
+        t.translation.y += ring.dir * speed * time.delta_secs();
+        if t.translation.y < r.low {
             ring.dir = 1.0;
         }
-        if t.translation.y > 150.0 {
+        if t.translation.y > r.high {
             ring.dir = -1.0;
         }
     }
@@ -313,9 +315,4 @@ fn take_shot(
     if n.0 == 70 {
         exit.write(AppExit::Success);
     }
-}
-
-/// Desktop "wide" view stands on the ring beam opposite the bridge.
-fn apothem_cam() -> f32 {
-    SIZES[1].0 - 8.0
 }

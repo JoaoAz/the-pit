@@ -12,13 +12,13 @@ Blockout sem texturas para sentir a escala no óculos antes de investir em detal
 
 | Elemento | Medida |
 |---|---|
-| Poço | 12 faces, diâmetro 90 m (alternativas 60 m e 120 m) |
-| Módulo | 30 m de altura, 4 variantes empilhadas ±600 m |
-| Plataforma | Ø 12 m, chão a y = 0 |
-| Corrimão | 1,1 m |
-| Ponte | da plataforma até à parede (39 m no poço de 90 m) |
-| Passerelles, portas, escadas | 2,1 m de porta, escada com degraus a 30 cm |
-| Figuras de referência | 1,8 m, na plataforma, no fim da ponte, na passerelle oposta e em cima da viga do nível acima |
+| Poço | 12 faces, diâmetro 400 m (alternativas 200 m e 800 m) |
+| Módulo | altura proporcional ao diâmetro (267 m no poço de 400 m), 4 variantes, 14 para cima e 14 para baixo |
+| Fim do poço | nenhum: os módulos dissolvem-se no nevoeiro e o vazio tem a cor do nevoeiro |
+| Plataforma | disco de Ø 12 m a flutuar no centro, sem ponte, corrimão nem outros objetos; chão a y = 0 |
+| Referências humanas | passerelles, portas de 2,1 m, escadas e figuras de 1,8 m nas paredes, sempre à escala real, para parecerem minúsculas |
+
+A estrutura (painéis, vigas, tubagens, máquinas) cresce com o diâmetro; os detalhes humanos não. É essa diferença que dá a escala.
 
 Os 4 estados de material e luz são parâmetros, por isso a transição mecânico ↔ clínico demora 4 s e não custa nada em performance.
 
@@ -26,14 +26,14 @@ Os 4 estados de material e luz são parâmetros, por isso a transição mecânic
 
 1. Descarrega `the-pit-windows` (o `.exe`) do último run de **Build Windows** no separador *Actions* do GitHub.
 2. Liga o Quest 3 ao PC com **Meta Quest Link** (cabo ou Air Link) e confirma, na app Meta Quest Link do PC, que a Meta está definida como runtime OpenXR ativo (*Settings → General → OpenXR Runtime*).
-3. Corre `the_pit.exe`. Ficas no centro da plataforma; o chão real corresponde ao chão da plataforma (espaço *stage*).
+3. Corre `the_pit.exe`. Ficas no centro da plataforma; o chão real corresponde ao chão da plataforma (espaço *stage*). Se a janela ficar preta, o óculos não foi detetado.
 
 ### Comandos
 
 | Ação | Comando Touch | Teclado |
 |---|---|---|
 | Mecânico ↔ clínico | A | L |
-| Mudar diâmetro do poço (60 / 90 / 120 m) | B | 1 / 2 / 3 |
+| Mudar diâmetro do poço (200 / 400 / 800 m) | B | 1 / 2 / 3 |
 | Anel a descer / parar (teste de enjoo) | X | R |
 | Sair | | Esc |
 
@@ -41,7 +41,7 @@ Os 4 estados de material e luz são parâmetros, por isso a transição mecânic
 
 `the_pit.exe --desktop` abre uma janela normal: botão direito do rato para olhar, WASD para andar, Q/E para descer/subir, Shift para ir depressa.
 
-Para gerar uma captura: `the_pit --shot captura.png --view up|down|wide|ring|clinical`.
+Para gerar uma captura: `the_pit --shot captura.png --view wide|up|down|far|ring|clinical`.
 
 ## Compilar
 
