@@ -1,5 +1,5 @@
 //! Quest Touch controller buttons and hand markers (VR mode only).
-//! A = mechanical/clinical, B = next shaft size, X = start/stop the moving ring.
+//! A = start the reconfiguration, B = next shaft size, X = moving ring, Y = autoplay on/off.
 
 use std::ops::Deref;
 
@@ -24,6 +24,7 @@ struct Actions {
     mood: openxr::Action<bool>,
     size: openxr::Action<bool>,
     ring: openxr::Action<bool>,
+    auto: openxr::Action<bool>,
     left: openxr::Action<Posef>,
     right: openxr::Action<Posef>,
 }
@@ -45,9 +46,10 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
     let mood = set.create_action("mood", "Mudar estado", &[]).unwrap();
     let size = set.create_action("size", "Mudar tamanho", &[]).unwrap();
     let ring = set.create_action("ring", "Anel", &[]).unwrap();
+    let auto = set.create_action("auto", "Automatico", &[]).unwrap();
     let left = set.create_action("left_pose", "Mao esquerda", &[]).unwrap();
     let right = set.create_action("right_pose", "Mao direita", &[]).unwrap();
-    commands.insert_resource(Actions { set, mood, size, ring, left, right });
+    commands.insert_resource(Actions { set, mood, size, ring, auto, left, right });
 }
 
 fn suggest_bindings(actions: Res<Actions>, mut out: MessageWriter<OxrSuggestActionBinding>) {
@@ -60,6 +62,7 @@ fn suggest_bindings(actions: Res<Actions>, mut out: MessageWriter<OxrSuggestActi
     out.write(b(actions.mood.as_raw(), "/user/hand/right/input/a/click"));
     out.write(b(actions.size.as_raw(), "/user/hand/right/input/b/click"));
     out.write(b(actions.ring.as_raw(), "/user/hand/left/input/x/click"));
+    out.write(b(actions.auto.as_raw(), "/user/hand/left/input/y/click"));
     out.write(b(actions.left.as_raw(), "/user/hand/left/input/grip/pose"));
     out.write(b(actions.right.as_raw(), "/user/hand/right/input/grip/pose"));
 }
@@ -102,6 +105,7 @@ fn read_buttons(
     mut mood: ResMut<Mood>,
     mut size: ResMut<Size>,
     mut ring: ResMut<RingMotion>,
+    mut rc: ResMut<crate::reconfig::Reconfig>,
 ) {
     if pressed(&actions.mood, &session) {
         mood.target = if mood.target < 0.5 { 1.0 } else { 0.0 };
@@ -111,5 +115,8 @@ fn read_buttons(
     }
     if pressed(&actions.ring, &session) {
         ring.moving = !ring.moving;
+    }
+    if pressed(&actions.auto, &session) {
+        rc.autoplay = !rc.autoplay;
     }
 }

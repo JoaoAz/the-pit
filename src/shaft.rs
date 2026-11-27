@@ -52,6 +52,8 @@ pub struct Mats {
     pub lamp_alt: Handle<StandardMaterial>,
     pub figure: Handle<StandardMaterial>,
     pub platform: Handle<StandardMaterial>,
+    pub skin: Handle<StandardMaterial>,
+    pub skin_line: Handle<StandardMaterial>,
 }
 
 const GREY: [f32; 4] = [0.75, 0.75, 0.73, 1.0];
@@ -207,7 +209,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
 
         // ---- fine (near modules only)
         for _ in 0..((rng.int(1, 3) as f32 * per) as u32).min(30) {
-            let (hu, hv, hw) = (rng.range(2.5, 5.5) * s, rng.range(2.5, 7.0) * s, rng.range(1.5, 4.0) * s);
+            let (hu, hv, hw) = (rng.range(2.5, 5.5) * s, rng.range(2.5, 7.0) * s, rng.range(1.5, 2.6) * s); // stays behind the clinical skin
             let u = rng.range(-w_face / 2.0 + hu + 2.5 * s, w_face / 2.0 - hu - 2.5 * s);
             let v = rng.range(hv + s, h - hv - 3.0 * s);
             fine.cuboid(f.p(u, v, 0.8 * s + hw), ax, [hu, hv, hw], tone(&mut rng));
@@ -350,6 +352,8 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
     }
 
     commands.spawn((ShaftPart, Mesh3d(meshes.add(build_platform())), MeshMaterial3d(mats.platform.clone())));
+
+    crate::reconfig::spawn_shutters(commands, meshes, mats, apothem, Z_OFF);
 
     // 1.8 m figures on the wall catwalk of the module the platform floats in (k = 0)
     let fig = figure(meshes);

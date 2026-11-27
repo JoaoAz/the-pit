@@ -6,7 +6,7 @@ Escrito em **Rust** com [Bevy](https://bevy.org) 0.19 e [bevy_mod_openxr](https:
 
 ![Protótipo de escala](docs/prototipo-escala.jpg)
 
-## Estado atual: protótipo de escala
+## Escala
 
 Blockout sem texturas para sentir a escala no óculos antes de investir em detalhe.
 
@@ -23,7 +23,17 @@ Blockout sem texturas para sentir a escala no óculos antes de investir em detal
 
 Porque é que o detalhe não cresce com o poço: se tudo crescer na mesma proporção, um poço de 2 km parece igual a um de 90 m visto de mais longe. Em VR a visão estéreo só dá profundidade até 20 ou 30 m, por isso a escala lê-se pela quantidade de detalhe e pela atmosfera.
 
-Os estados mecânico e clínico são só parâmetros de material, luz e nevoeiro, por isso a transição demora 4 s e não custa nada em performance.
+## Reconfiguração do espaço
+
+O poço passa sozinho do estado mecânico ao clínico e volta.
+
+![Mecânico, transição, clínico, olhar para cima](docs/reconfiguracao.jpg)
+
+- **Mecânico**: as persianas gigantes da parede (painéis de ~60 × 60 m) estão abertas como alhetas horizontais e deixam ver a maquinaria atrás. Luz de sódio, nevoeiro denso.
+- **Clínico**: as persianas rodam e fecham numa pele branca e lisa com linhas de luz, a 26 m da parede. Luz fria, nevoeiro mais leve.
+- **Sequência**: 60 s parado → 8 s de alarme (as luzes pulsam a vermelho) → 50 s de movimento, com o anel a descer → parado no outro estado.
+- **Coreografia**: o fecho é uma onda que vem das duas pontas do poço em direção à plataforma, por isso os últimos painéis a fechar são os que estão à tua altura. A abertura faz o caminho inverso. Os materiais mudam sobretudo quando os painéis perto de ti se mexem.
+- Corre em ciclo automático, ou a pedido (A / L). O ciclo automático liga e desliga com Y / P.
 
 ## Correr no Quest 3
 
@@ -35,16 +45,17 @@ Os estados mecânico e clínico são só parâmetros de material, luz e nevoeiro
 
 | Ação | Comando Touch | Teclado |
 |---|---|---|
-| Mecânico ↔ clínico | A | L |
+| Iniciar a reconfiguração | A | L |
 | Mudar diâmetro do poço (1 / 2 / 4 km) | B | 1 / 2 / 3 |
 | Anel a descer / parar (teste de enjoo) | X | R |
+| Ciclo automático ligado / desligado | Y | P |
 | Sair | | Esc |
 
 ### Sem óculos
 
 `the_pit.exe --desktop` abre uma janela normal: botão direito do rato para olhar, WASD para andar, Q/E para descer/subir, Shift para ir depressa.
 
-Para gerar uma captura: `the_pit --shot captura.png --view wide|up|down|far|ring|clinical`.
+Para gerar uma captura: `the_pit --shot captura.png --view wide|up|down|far|ring|clinical|transition`.
 
 ## Compilar
 

@@ -5,6 +5,7 @@
 //! `--shot <file.png> --view <wide|up|down|far|ring|clinical>` renders one desktop frame and exits.
 
 mod meshbuild;
+mod reconfig;
 mod shaft;
 mod texture;
 mod xr_input;
@@ -85,7 +86,17 @@ fn main() -> AppExit {
         app.add_plugins(xr_input::XrInputPlugin);
     }
     let start_mood = if args.view == "clinical" { 1.0 } else { 0.0 };
-    app.insert_resource(Mood { current: start_mood, target: start_mood })
+    let mut rc = reconfig::Reconfig::new(start_mood);
+    if args.shot.is_some() {
+        // screenshots show a fixed moment of the sequence
+        rc.frozen = true;
+        if args.view == "transition" {
+            rc.progress = 0.62;
+        }
+    }
+    app.insert_resource(rc)
+        .add_plugins(reconfig::ReconfigPlugin)
+        .insert_resource(Mood { current: start_mood, target: start_mood })
         .insert_resource(Size(shaft::DEFAULT_SIZE))
         .insert_resource(RingMotion { moving: args.view == "ring", dir: -1.0 })
         .insert_resource(ClearColor(Color::BLACK))
@@ -129,6 +140,8 @@ fn setup(
         lamp_alt: lamp(&mut materials, Color::srgb(1.0, 0.45, 0.15)),
         figure: materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.6, ..default() }),
         platform: materials.add(StandardMaterial { base_color: Color::srgb(0.42, 0.42, 0.42), perceptual_roughness: 0.7, ..default() }),
+        skin: materials.add(StandardMaterial { base_color: Color::srgb(0.18, 0.17, 0.15), perceptual_roughness: 0.7, metallic: 0.3, ..default() }),
+        skin_line: lamp(&mut materials, Color::srgb(0.5, 0.3, 0.12)),
     };
     shaft::spawn_shaft(&mut commands, &mut meshes, &m, SIZES[size.0].0);
     commands.insert_resource(Materials { m });
@@ -183,6 +196,7 @@ fn keys(
     mut mood: ResMut<Mood>,
     mut size: ResMut<Size>,
     mut ring: ResMut<RingMotion>,
+    mut rc: ResMut<reconfig::Reconfig>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if kb.just_pressed(KeyCode::KeyL) {
@@ -198,6 +212,10 @@ fn keys(
     if kb.just_pressed(KeyCode::KeyR) {
         ring.moving = !ring.moving;
     }
+    if kb.just_pressed(KeyCode::KeyP) {
+        rc.autoplay = !rc.autoplay;
+        info!("autoplay: {}", rc.autoplay);
+    }
     if kb.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
     }
@@ -205,19 +223,19 @@ fn keys(
 
 fn apply_mood(
     time: Res<Time>,
-    mut mood: ResMut<Mood>,
+    mood: Res<Mood>,
     mats: Res<Materials>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fogs: Query<&mut DistanceFog>,
     mut ambient: ResMut<GlobalAmbientLight>,
     mut clear: ResMut<ClearColor>,
     size: Res<Size>,
+    rc: Res<reconfig::Reconfig>,
     mut first: Local<bool>,
 ) {
-    let step = time.delta_secs() / 4.0; // 4 s transition
-    let before = mood.current;
-    mood.current += (mood.target - mood.current).clamp(-step, step);
-    if before == mood.current && *first && !size.is_changed() {
+    // mood.current is driven by the reconfiguration sequence
+    let pulse = rc.alarm * (0.5 + 0.5 * (time.elapsed_secs() * 5.0).sin());
+    if !mood.is_changed() && rc.alarm == 0.0 && *first && !size.is_changed() {
         return;
     }
     *first = true;
@@ -234,11 +252,24 @@ fn apply_mood(
         let e = Vec3::new(3.0, 2.2, 1.6).lerp(Vec3::new(1.2, 1.6, 2.0), t);
         m.emissive = LinearRgba::rgb(e.x, e.y, e.z);
     }
+    let red = Vec3::new(1.0, 0.04, 0.02);
+    let alarm = |c: Color| {
+        let l = c.to_srgba();
+        let v = Vec3::new(l.red, l.green, l.blue).lerp(red, pulse);
+        Color::srgb(v.x, v.y, v.z)
+    };
     if let Some(mut m) = materials.get_mut(&mats.m.lamp) {
-        m.base_color = mix(Vec3::new(1.0, 0.75, 0.45), Vec3::new(0.85, 0.95, 1.0));
+        m.base_color = alarm(mix(Vec3::new(1.0, 0.75, 0.45), Vec3::new(0.85, 0.95, 1.0)));
     }
     if let Some(mut m) = materials.get_mut(&mats.m.lamp_alt) {
-        m.base_color = mix(Vec3::new(1.0, 0.45, 0.15), Vec3::new(0.55, 0.85, 1.0));
+        m.base_color = alarm(mix(Vec3::new(1.0, 0.45, 0.15), Vec3::new(0.55, 0.85, 1.0)));
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.skin) {
+        m.base_color = mix(Vec3::new(0.18, 0.17, 0.15), Vec3::new(0.92, 0.94, 0.96));
+        m.perceptual_roughness = 0.7 + (0.25 - 0.7) * t;
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.skin_line) {
+        m.base_color = alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0)));
     }
     for mut f in &mut fogs {
         *f = fog(t, SIZES[size.0].0);
