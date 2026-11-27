@@ -12,13 +12,16 @@ Blockout sem texturas para sentir a escala no óculos antes de investir em detal
 
 | Elemento | Medida |
 |---|---|
-| Poço | 12 faces, diâmetro 400 m (alternativas 200 m e 800 m) |
-| Módulo | altura proporcional ao diâmetro (267 m no poço de 400 m), 4 variantes, 14 para cima e 14 para baixo |
-| Fim do poço | nenhum: os módulos dissolvem-se no nevoeiro e o vazio tem a cor do nevoeiro |
-| Plataforma | disco de Ø 12 m a flutuar no centro, sem ponte, corrimão nem outros objetos; chão a y = 0 |
-| Referências humanas | passerelles, portas de 2,1 m, escadas e figuras de 1,8 m nas paredes, sempre à escala real, para parecerem minúsculas |
+| Poço | 12 faces, diâmetro 2 km (alternativas 1 km e 4 km) |
+| Ritmo | uma viga anelar a cada 120 m, seja qual for o diâmetro |
+| Detalhe | tamanho real fixo: painéis de 10 a 30 m, janelas de ~1 m (textura gerada por código, mosaico de 40 m) |
+| Fim do poço | nenhum: 110 módulos para cada lado (~13 km) que se dissolvem no nevoeiro; o vazio tem a cor do nevoeiro |
+| Nevoeiro | densidade real em metros (0,00045/m), por isso a parede do outro lado fica apagada como uma montanha distante |
+| Plataforma | disco de Ø 4 m a flutuar no centro, sem ponte, corrimão nem outros objetos; chão a y = 0 |
+| Referências humanas | passerelles, portas de 2,1 m, escadas e figuras de 1,8 m nas paredes |
+| Desempenho | 3 níveis de detalhe por módulo (até 1,3 km, até 3,5 km, resto só casca) |
 
-A estrutura (painéis, vigas, tubagens, máquinas) cresce com o diâmetro; os detalhes humanos não. É essa diferença que dá a escala.
+Porque é que o detalhe não cresce com o poço: se tudo crescer na mesma proporção, um poço de 2 km parece igual a um de 90 m visto de mais longe. Em VR a visão estéreo só dá profundidade até 20 ou 30 m, por isso a escala lê-se pela quantidade de detalhe e pela atmosfera.
 
 Os estados mecânico e clínico são só parâmetros de material, luz e nevoeiro, por isso a transição demora 4 s e não custa nada em performance.
 
@@ -33,7 +36,7 @@ Os estados mecânico e clínico são só parâmetros de material, luz e nevoeiro
 | Ação | Comando Touch | Teclado |
 |---|---|---|
 | Mecânico ↔ clínico | A | L |
-| Mudar diâmetro do poço (200 / 400 / 800 m) | B | 1 / 2 / 3 |
+| Mudar diâmetro do poço (1 / 2 / 4 km) | B | 1 / 2 / 3 |
 | Anel a descer / parar (teste de enjoo) | X | R |
 | Sair | | Esc |
 

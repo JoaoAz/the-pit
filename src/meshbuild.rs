@@ -9,7 +9,16 @@ pub struct MeshBuilder {
     pos: Vec<[f32; 3]>,
     nrm: Vec<[f32; 3]>,
     col: Vec<[f32; 4]>,
+    uv: Vec<[f32; 2]>,
     idx: Vec<u32>,
+}
+
+/// World-scale planar UVs, so texture detail keeps its real size on every surface.
+fn planar_uv(p: Vec3, n: Vec3) -> [f32; 2] {
+    let up = if n.y.abs() > 0.9 { Vec3::Z } else { Vec3::Y };
+    let tu = up.cross(n).normalize_or_zero();
+    let tv = n.cross(tu);
+    [p.dot(tu) / crate::texture::TILE_M, -p.dot(tv) / crate::texture::TILE_M]
 }
 
 impl MeshBuilder {
@@ -19,6 +28,7 @@ impl MeshBuilder {
             self.pos.push(v.to_array());
             self.nrm.push(n.to_array());
             self.col.push(c);
+            self.uv.push(planar_uv(v, n));
         }
         self.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
@@ -49,13 +59,16 @@ impl MeshBuilder {
         let t = ax.any_orthonormal_vector();
         let bt = ax.cross(t);
         let b = self.pos.len() as u32;
+        let len = (p1 - p0).length();
+        let tm = crate::texture::TILE_M;
         for i in 0..=sides {
             let a = std::f32::consts::TAU * i as f32 / sides as f32;
             let dir = t * a.cos() + bt * a.sin();
-            for p in [p0, p1] {
+            for (p, along) in [(p0, 0.0), (p1, len)] {
                 self.pos.push((p + dir * r).to_array());
                 self.nrm.push(dir.to_array());
                 self.col.push(col);
+                self.uv.push([a * r / tm, (p0.y + along) / tm]);
             }
         }
         for i in 0..sides {
@@ -69,12 +82,15 @@ impl MeshBuilder {
             self.pos.push(p.to_array());
             self.nrm.push(n.to_array());
             self.col.push(col);
+            self.uv.push(planar_uv(p, n));
             for i in 0..=sides {
                 let a = std::f32::consts::TAU * i as f32 / sides as f32;
                 let dir = t * a.cos() + bt * a.sin();
-                self.pos.push((p + dir * r).to_array());
+                let q = p + dir * r;
+                self.pos.push(q.to_array());
                 self.nrm.push(n.to_array());
                 self.col.push(col);
+                self.uv.push(planar_uv(q, n));
             }
             for i in 0..sides {
                 let (x, y) = (cb + 1 + i, cb + 2 + i);
@@ -92,6 +108,7 @@ impl MeshBuilder {
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
             .with_inserted_indices(Indices::U32(self.idx))
     }
 }

@@ -6,6 +6,7 @@
 
 mod meshbuild;
 mod shaft;
+mod texture;
 mod xr_input;
 
 use bevy::pbr::{DistanceFog, FogFalloff};
@@ -109,14 +110,25 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     args: Res<Args>,
     size: Res<Size>,
 ) {
+    let (albedo, emissive) = texture::wall_textures();
     let m = Mats {
-        wall: materials.add(StandardMaterial { base_color: Color::srgb(0.3, 0.28, 0.24), perceptual_roughness: 0.8, metallic: 0.2, ..default() }),
+        wall: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.28, 0.24),
+            base_color_texture: Some(images.add(albedo)),
+            emissive_texture: Some(images.add(emissive)),
+            emissive: LinearRgba::rgb(3.0, 2.2, 1.6),
+            perceptual_roughness: 0.8,
+            metallic: 0.2,
+            ..default()
+        }),
         lamp: lamp(&mut materials, Color::srgb(1.0, 0.75, 0.45)),
         lamp_alt: lamp(&mut materials, Color::srgb(1.0, 0.45, 0.15)),
         figure: materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.6, ..default() }),
+        platform: materials.add(StandardMaterial { base_color: Color::srgb(0.42, 0.42, 0.42), perceptual_roughness: 0.7, ..default() }),
     };
     shaft::spawn_shaft(&mut commands, &mut meshes, &m, SIZES[size.0].0);
     commands.insert_resource(Materials { m });
@@ -124,10 +136,10 @@ fn setup(
     if args.desktop {
         let (pos, yaw, pitch) = match args.view.as_str() {
             "up" => (Vec3::new(0.5, 1.7, 2.6), 0.2, 1.35),
-            "down" => (Vec3::new(4.7, 1.6, 4.7), 0.8, -1.15),
+            "down" => (Vec3::new(1.2, 1.6, 1.2), 0.8, -1.0),
             "ring" => (Vec3::new(2.0, 1.7, 3.5), 0.1, 0.45),
             "clinical" => (Vec3::new(-2.0, 1.7, 2.0), 0.5, 0.15),
-            "far" => (Vec3::new(0.0, 25.0, 60.0), 0.0, -0.3),
+            "far" => (Vec3::new(0.0, 6.0, 14.0), 0.0, -0.35),
             _ => (Vec3::new(0.0, 1.7, 4.0), 0.0, 0.05),
         };
         commands.spawn((
@@ -147,10 +159,10 @@ fn fog_color(mood: f32) -> Color {
     Color::srgb(c.x, c.y, c.z)
 }
 
-fn fog(mood: f32, apothem: f32) -> DistanceFog {
+fn fog(mood: f32, _apothem: f32) -> DistanceFog {
     DistanceFog {
         color: fog_color(mood),
-        falloff: FogFalloff::Exponential { density: shaft::fog_density(apothem, mood) },
+        falloff: FogFalloff::Exponential { density: shaft::fog_density(mood) },
         ..default()
     }
 }
@@ -218,6 +230,9 @@ fn apply_mood(
         m.base_color = mix(Vec3::new(0.30, 0.28, 0.24), Vec3::new(0.95, 0.96, 0.97));
         m.perceptual_roughness = 0.8 + (0.35 - 0.8) * t;
         m.metallic = 0.2 * (1.0 - t);
+        // window lights: warm and strong in the mechanical state, cool and softer when clinical
+        let e = Vec3::new(3.0, 2.2, 1.6).lerp(Vec3::new(1.2, 1.6, 2.0), t);
+        m.emissive = LinearRgba::rgb(e.x, e.y, e.z);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.lamp) {
         m.base_color = mix(Vec3::new(1.0, 0.75, 0.45), Vec3::new(0.85, 0.95, 1.0));
@@ -239,7 +254,8 @@ fn move_ring(time: Res<Time>, mut ring: ResMut<RingMotion>, size: Res<Size>, mut
         return;
     }
     // slow for its size, so it reads as a machine and not as the world moving
-    let speed = 2.0 * shaft::scale(SIZES[size.0].0).sqrt();
+    let _ = &size;
+    let speed = shaft::ring_speed();
     for (mut t, r) in &mut q {
         t.translation.y += ring.dir * speed * time.delta_secs();
         if t.translation.y < r.low {
