@@ -386,9 +386,11 @@ pub fn smoke_texture() -> Image {
     for y in 0..n {
         for x in 0..n {
             let (u, v) = (x as f32 / n as f32, y as f32 / n as f32);
-            let f = fbm(u, v, 3, 5, 31);
-            let a = ((f - 0.12) * 2.0).clamp(0.0, 1.0);
-            let g = 0.7 + 0.3 * f;
+            // billows: large soft lobes with sharper wisps on top
+            let f = fbm(u, v, 3, 6, 31);
+            let lobes = (1.0 - (fbm(u, v, 2, 3, 77) * 2.0 - 1.0).abs()).powf(1.5);
+            let a = ((f * 0.6 + lobes * 0.6 - 0.45) * 2.6).clamp(0.0, 1.0);
+            let g = 0.55 + 0.45 * f;
             px[y * n + x] = [g, g, g, a];
         }
     }

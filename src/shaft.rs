@@ -377,7 +377,7 @@ fn plume(mb: &mut MeshBuilder, rng: &mut Rng, base: Vec3, height: f32, w0: f32, 
     let to_eye = (EYE - base).with_y(0.0).normalize();
     let right = Vec3::Y.cross(to_eye).normalize();
     let drift = right * rng.range(-0.3, 0.3) * height;
-    let (u_off, rows) = (rng.f(), 6);
+    let (u_off, rows) = (rng.f(), 10);
     let point = |x: f32, t: f32| base + right * x * (w0 + (w1 - w0) * t) + Vec3::Y * t * height + drift * t * t;
     let alpha = |x: f32, t: f32| (1.0 - x * x) * (1.0 - t).powf(0.8) * (t * 8.0).min(1.0);
     let uvs = |x: f32, t: f32| [u_off + x * 0.5 * (w0 + (w1 - w0) * t) / 60.0, -t * height / 60.0];
@@ -389,7 +389,11 @@ fn plume(mb: &mut MeshBuilder, rng: &mut Rng, base: Vec3, height: f32, w0: f32, 
                 corners.map(|(x, t)| point(x, t)),
                 corners.map(|(x, t)| uvs(x, t)),
                 to_eye,
-                corners.map(|(x, t)| [1.0, 1.0, 1.0, alpha(x, t)]),
+                // brighter at the bottom, where the vent light hits it
+                corners.map(|(x, t)| {
+                    let k = 1.0 - 0.55 * t;
+                    [k, k * 0.97, k * 0.93, alpha(x, t)]
+                }),
             );
         }
     }
@@ -855,12 +859,33 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
         let n = if rng.chance(0.4) { rng.int(2, 4) } else { 1 };
         for j in 0..n {
             let off = Vec3::new(j as f32 * r * 2.4, 0.0, 0.0);
-            body.cylinder(c + off - Vec3::Y * reach, c + off + Vec3::Y * reach, r, 12, HAZ_K);
+            body.cylinder(c + off - Vec3::Y * reach, c + off + Vec3::Y * reach, r, 12, [0.42, 0.4, 0.37, 1.0]);
             let mut y = -reach + rng.range(0.0, 30.0);
             while y < reach {
                 body.cylinder(c + off + Vec3::Y * y, c + off + Vec3::Y * (y + 1.6), r * 1.35, 12, DARK);
                 y += rng.range(18.0, 40.0);
             }
+        }
+        // a narrow flood high above, grazing down the cable
+        {
+            let to_c = Vec3::new(c.x, 0.0, c.z).normalize();
+            let lp = c + Vec3::Y * rng.range(250.0, 400.0) - to_c * 14.0;
+            let target = c + Vec3::Y * rng.range(-200.0, 0.0);
+            commands.spawn((
+                ShaftPart,
+                PitLight { mech: Vec3::new(1.0, 0.55, 0.2), clin: Vec3::new(0.85, 0.93, 1.0) },
+                SpotLight {
+                    color: Color::linear_rgb(1.0, 0.55, 0.2),
+                    intensity: 6.0e8,
+                    range: 800.0,
+                    radius: 1.0,
+                    inner_angle: 0.02,
+                    outer_angle: 0.06,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                Transform::from_translation(lp).looking_at(target, Vec3::X),
+            ));
         }
         // work lamps clamped to the cable: warm pools on its surface and a glow of haze
         for _ in 0..2 {
