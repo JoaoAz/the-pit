@@ -1,26 +1,31 @@
-//! THE PIT - scale prototype.
+//! THE PIT.
 //!
 //! Run without arguments to start in VR (OpenXR, e.g. Quest 3 over Link).
 //! `--desktop` opens a normal window with a mouse-look camera.
-//! `--shot <file.png> --view <wide|up|down|far|ring|clinical>` renders one desktop frame and exits.
+//! `--shot <file.png> --view <wide|up|down|far|ring|clinical|transition>` renders one desktop frame and exits.
+//! `--pano <pixels>` sets the size of each panorama face (default 2048).
 
 mod meshbuild;
+mod panorama;
 mod reconfig;
 mod shaft;
 mod texture;
 mod xr_input;
 
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::math::Affine2;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::window::{CursorGrabMode, CursorOptions};
-use shaft::{Mats, MovingRing, ShaftPart, SIZES};
+use shaft::{Mats, MovingRing, PitLight, ShaftPart, SIZES};
 
 #[derive(Resource)]
 struct Args {
     desktop: bool,
     shot: Option<String>,
     view: String,
+    pano: u32,
 }
 
 /// 0.0 = mechanical/oppressive, 1.0 = clinical/high-tech.
@@ -60,6 +65,7 @@ fn parse_args() -> Args {
     Args {
         desktop: a.iter().any(|x| x == "--desktop") || shot.is_some(),
         view: get("--view").unwrap_or_else(|| "wide".into()),
+        pano: get("--pano").and_then(|v| v.parse().ok()).unwrap_or(2048),
         shot,
     }
 }
@@ -70,7 +76,7 @@ fn main() -> AppExit {
     if args.desktop {
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "THE PIT - prototipo de escala".into(),
+                title: "THE PIT".into(),
                 resolution: (1600u32, 900u32).into(),
                 ..default()
             }),
@@ -82,9 +88,10 @@ fn main() -> AppExit {
                 .build()
                 .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
         ));
-        app.add_systems(Update, add_fog_to_xr_cameras);
         app.add_plugins(xr_input::XrInputPlugin);
     }
+    app.add_plugins((FrameTimeDiagnosticsPlugin::default(), panorama::PanoramaPlugin { res: args.pano }))
+        .add_systems(Update, (add_fog_to_cameras, animate_smoke, report_frame_time));
     let start_mood = if args.view == "clinical" { 1.0 } else { 0.0 };
     let mut rc = reconfig::Reconfig::new(start_mood);
     if args.shot.is_some() {
@@ -117,6 +124,26 @@ fn lamp(materials: &mut Assets<StandardMaterial>, c: Color) -> Handle<StandardMa
     materials.add(StandardMaterial { base_color: c, unlit: true, ..default() })
 }
 
+/// Additive sprite material (halos, light beams): adds light, ignores depth order.
+fn additive(materials: &mut Assets<StandardMaterial>, tex: Option<Handle<Image>>) -> Handle<StandardMaterial> {
+    materials.add(StandardMaterial {
+        base_color_texture: tex,
+        unlit: true,
+        alpha_mode: AlphaMode::Add,
+        cull_mode: None,
+        double_sided: true,
+        ..default()
+    })
+}
+
+/// Skin tints (mechanical colour, clinical colour, roughness) for the shutter variants.
+const SKINS: [([f32; 3], [f32; 3], f32); 4] = [
+    ([0.08, 0.075, 0.065], [0.42, 0.45, 0.48], 0.65),
+    ([0.065, 0.06, 0.055], [0.3, 0.33, 0.36], 0.75),
+    ([0.1, 0.09, 0.075], [0.5, 0.52, 0.53], 0.5),
+    ([0.055, 0.055, 0.05], [0.22, 0.25, 0.28], 0.8),
+];
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -125,24 +152,89 @@ fn setup(
     args: Res<Args>,
     size: Res<Size>,
 ) {
-    let (albedo, emissive) = texture::wall_textures();
+    let wt = texture::wall_textures();
+    let st = texture::skin_textures();
+    let skin_albedo = images.add(st.albedo);
+    let skin_mr = images.add(st.metal_rough);
+    let skin_normal = images.add(st.normal);
+    let skin_depth = images.add(st.depth);
+    let glow = images.add(texture::glow_texture());
     let m = Mats {
         wall: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.3, 0.28, 0.24),
-            base_color_texture: Some(images.add(albedo)),
-            emissive_texture: Some(images.add(emissive)),
-            emissive: LinearRgba::rgb(3.0, 2.2, 1.6),
-            perceptual_roughness: 0.8,
-            metallic: 0.2,
+            base_color: Color::srgb(0.22, 0.2, 0.17),
+            base_color_texture: Some(images.add(wt.albedo)),
+            emissive_texture: wt.emissive.map(|e| images.add(e)),
+            emissive: LinearRgba::rgb(2.0, 1.4, 1.0),
+            metallic_roughness_texture: Some(images.add(wt.metal_rough)),
+            normal_map_texture: Some(images.add(wt.normal)),
+            // relief: recesses up to ~0.5 m (UV units are 40 m tiles)
+            depth_map: Some(images.add(wt.depth)),
+            parallax_depth_scale: 0.012,
+            max_parallax_layer_count: 16.0,
+            perceptual_roughness: 1.0,
+            metallic: 1.0,
+            reflectance: 0.3,
             ..default()
         }),
         lamp: lamp(&mut materials, Color::srgb(1.0, 0.75, 0.45)),
         lamp_alt: lamp(&mut materials, Color::srgb(1.0, 0.45, 0.15)),
-        figure: materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.6, ..default() }),
-        platform: materials.add(StandardMaterial { base_color: Color::srgb(0.42, 0.42, 0.42), perceptual_roughness: 0.7, ..default() }),
-        skin: materials.add(StandardMaterial { base_color: Color::srgb(0.18, 0.17, 0.15), perceptual_roughness: 0.7, metallic: 0.3, ..default() }),
+        figure: materials.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.8, ..default() }),
+        platform: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.3, 0.3),
+            base_color_texture: Some(skin_albedo.clone()),
+            normal_map_texture: Some(skin_normal.clone()),
+            perceptual_roughness: 0.85,
+            reflectance: 0.3,
+            ..default()
+        }),
+        skins: SKINS
+            .iter()
+            .map(|(c, _, r)| {
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(c[0], c[1], c[2]),
+                    base_color_texture: Some(skin_albedo.clone()),
+                    metallic_roughness_texture: Some(skin_mr.clone()),
+                    normal_map_texture: Some(skin_normal.clone()),
+                    depth_map: Some(skin_depth.clone()),
+                    parallax_depth_scale: 0.004,
+                    max_parallax_layer_count: 8.0,
+                    perceptual_roughness: *r,
+                    metallic: 0.0,
+                    reflectance: 0.35,
+                    ..default()
+                })
+            })
+            .collect(),
         skin_line: lamp(&mut materials, Color::srgb(0.5, 0.3, 0.12)),
+        halo: additive(&mut materials, Some(glow.clone())),
+        beam: additive(&mut materials, None),
+        smoke: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.3, 0.27, 0.24, 0.6),
+            base_color_texture: Some(images.add(texture::smoke_texture())),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        }),
+        grate: materials.add(StandardMaterial {
+            base_color_texture: Some(images.add(texture::grate_texture())),
+            alpha_mode: AlphaMode::AlphaToCoverage,
+            // Circle UVs span the diameter; one tile is 0.3 m
+            uv_transform: Affine2::from_scale(Vec2::splat(2.0 * shaft::GRATE_R / 0.3)),
+            perceptual_roughness: 0.6,
+            metallic: 0.6,
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        }),
+        haze: additive(&mut materials, Some(glow.clone())),
     };
+    // a soft light for the platform and the hands (the shaft lights only reach the panorama)
+    commands.spawn((
+        PointLight { color: Color::srgb(1.0, 0.85, 0.7), intensity: 600_000.0, range: 40.0, shadow_maps_enabled: false, ..default() },
+        Transform::from_xyz(4.0, 9.0, -3.0),
+    ));
     shaft::spawn_shaft(&mut commands, &mut meshes, &m, SIZES[size.0].0);
     commands.insert_resource(Materials { m });
 
@@ -166,8 +258,9 @@ fn setup(
 }
 
 fn fog_color(mood: f32) -> Color {
-    let mech = Vec3::new(0.10, 0.07, 0.04);
-    let clin = Vec3::new(0.62, 0.70, 0.76);
+    // dark haze: distance sinks into darkness, light only exists where a lamp is
+    let mech = Vec3::new(0.05, 0.034, 0.02);
+    let clin = Vec3::new(0.045, 0.06, 0.075);
     let c = mech.lerp(clin, mood);
     Color::srgb(c.x, c.y, c.z)
 }
@@ -180,7 +273,7 @@ fn fog(mood: f32, _apothem: f32) -> DistanceFog {
     }
 }
 
-fn add_fog_to_xr_cameras(
+fn add_fog_to_cameras(
     mut commands: Commands,
     cams: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
     mood: Res<Mood>,
@@ -231,6 +324,7 @@ fn apply_mood(
     mut clear: ResMut<ClearColor>,
     size: Res<Size>,
     rc: Res<reconfig::Reconfig>,
+    mut lights: Query<(&mut SpotLight, &PitLight)>,
     mut first: Local<bool>,
 ) {
     // mood.current is driven by the reconfiguration sequence
@@ -245,11 +339,13 @@ fn apply_mood(
         Color::srgb(c.x, c.y, c.z)
     };
     if let Some(mut m) = materials.get_mut(&mats.m.wall) {
-        m.base_color = mix(Vec3::new(0.30, 0.28, 0.24), Vec3::new(0.95, 0.96, 0.97));
-        m.perceptual_roughness = 0.8 + (0.35 - 0.8) * t;
-        m.metallic = 0.2 * (1.0 - t);
-        // window lights: warm and strong in the mechanical state, cool and softer when clinical
-        let e = Vec3::new(3.0, 2.2, 1.6).lerp(Vec3::new(1.2, 1.6, 2.0), t);
+        m.base_color = mix(Vec3::new(0.35, 0.34, 0.33), Vec3::new(0.42, 0.45, 0.48));
+        // roughness and metal come from the texture; the clinical wall is a bit smoother
+        m.perceptual_roughness = 1.0 - 0.2 * t;
+        m.metallic = 1.0 - 0.7 * t;
+        // window lights: warm in the mechanical state, cool and softer when clinical
+        // dim: a few faint windows deep in the dark, not a field of bright dots
+        let e = Vec3::new(0.9, 0.75, 0.6).lerp(Vec3::new(0.8, 1.0, 1.3), t) * 0.3;
         m.emissive = LinearRgba::rgb(e.x, e.y, e.z);
     }
     let red = Vec3::new(1.0, 0.04, 0.02);
@@ -258,26 +354,75 @@ fn apply_mood(
         let v = Vec3::new(l.red, l.green, l.blue).lerp(red, pulse);
         Color::srgb(v.x, v.y, v.z)
     };
+    // light strips are HDR so they pop against the dark (white and amber, as in the references)
+    let hdr = |c: Color, k: f32| {
+        let l = c.to_linear();
+        Color::linear_rgb(l.red * k, l.green * k, l.blue * k)
+    };
     if let Some(mut m) = materials.get_mut(&mats.m.lamp) {
-        m.base_color = alarm(mix(Vec3::new(1.0, 0.75, 0.45), Vec3::new(0.85, 0.95, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(0.95, 0.88, 0.75), Vec3::new(0.85, 0.95, 1.0))), 2.0);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.lamp_alt) {
-        m.base_color = alarm(mix(Vec3::new(1.0, 0.45, 0.15), Vec3::new(0.55, 0.85, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(1.0, 0.6, 0.3), Vec3::new(0.55, 0.85, 1.0))), 2.5);
     }
-    if let Some(mut m) = materials.get_mut(&mats.m.skin) {
-        m.base_color = mix(Vec3::new(0.18, 0.17, 0.15), Vec3::new(0.92, 0.94, 0.96));
-        m.perceptual_roughness = 0.7 + (0.25 - 0.7) * t;
+    for (h, (mc, cc, r)) in mats.m.skins.iter().zip(SKINS) {
+        if let Some(mut m) = materials.get_mut(h) {
+            m.base_color = mix(Vec3::from(mc), Vec3::from(cc));
+            m.perceptual_roughness = r + 0.1 * (1.0 - t);
+        }
+    }
+    let lamp_col = alarm(mix(Vec3::new(1.0, 0.55, 0.22), Vec3::new(0.85, 0.93, 1.0))).to_linear();
+    let glow = |k: f32| LinearRgba::rgb(lamp_col.red * k, lamp_col.green * k, lamp_col.blue * k);
+    if let Some(mut m) = materials.get_mut(&mats.m.halo) {
+        m.base_color = glow(3.0).into();
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.beam) {
+        m.base_color = glow(0.35).into();
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.haze) {
+        m.base_color = glow(0.35).into();
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.smoke) {
+        // smoke lit by the vents in the mechanical state, white steam in the clinical one
+        let c = mix(Vec3::new(0.85, 0.62, 0.4), Vec3::new(0.9, 0.93, 0.96)).to_srgba();
+        m.base_color = Color::srgba(c.red, c.green, c.blue, 0.95);
+    }
+    for (mut l, p) in &mut lights {
+        let c = alarm(mix(p.mech, p.clin)).to_linear();
+        l.color = Color::LinearRgba(c);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.skin_line) {
-        m.base_color = alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0))), 1.6);
     }
     for mut f in &mut fogs {
         *f = fog(t, SIZES[size.0].0);
     }
     // the empty space beyond the last module is the fog colour: no visible end
     clear.0 = fog_color(t);
-    ambient.color = mix(Vec3::new(1.0, 0.8, 0.6), Vec3::new(0.9, 0.95, 1.0));
-    ambient.brightness = 40.0 + (900.0 - 40.0) * t;
+    ambient.color = mix(Vec3::new(1.0, 0.75, 0.5), Vec3::new(0.9, 0.95, 1.0));
+    // almost no fill light: surfaces only exist where a lamp reaches them
+    ambient.brightness = 4.0 + (14.0 - 4.0) * t;
+}
+
+/// Smoke drifts upwards (the texture scrolls; the plume shape is in the vertex alpha).
+fn animate_smoke(time: Res<Time>, mats: Res<Materials>, mut materials: ResMut<Assets<StandardMaterial>>) {
+    if let Some(mut m) = materials.get_mut(&mats.m.smoke) {
+        let t = time.elapsed_secs();
+        m.uv_transform = Affine2::from_translation(Vec2::new(t * 0.004, t * 0.03));
+    }
+}
+
+/// Prints the frame time every 5 s to the console (visible next to the .exe on Windows).
+fn report_frame_time(time: Res<Time>, diags: Res<DiagnosticsStore>, mut last: Local<f32>) {
+    let now = time.elapsed_secs();
+    if now - *last < 5.0 {
+        return;
+    }
+    *last = now;
+    let get = |p| diags.get(p).and_then(|d| d.smoothed());
+    if let (Some(fps), Some(ms)) = (get(&FrameTimeDiagnosticsPlugin::FPS), get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)) {
+        info!("desempenho: {fps:.0} fps, {ms:.1} ms por frame");
+    }
 }
 
 fn move_ring(time: Res<Time>, mut ring: ResMut<RingMotion>, size: Res<Size>, mut q: Query<(&mut Transform, &MovingRing)>) {
@@ -359,7 +504,7 @@ fn take_shot(
         let path = args.shot.clone().unwrap();
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
-    if n.0 == 70 {
+    if n.0 == 46 {
         exit.write(AppExit::Success);
     }
 }
