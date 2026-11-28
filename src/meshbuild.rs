@@ -10,15 +10,28 @@ pub struct MeshBuilder {
     nrm: Vec<[f32; 3]>,
     col: Vec<[f32; 4]>,
     uv: Vec<[f32; 2]>,
+    tan: Vec<[f32; 4]>,
     idx: Vec<u32>,
+    /// Offset added to the planar UVs of everything built next (breaks texture tiling).
+    pub uv_off: [f32; 2],
+}
+
+/// Planar projection axes for a face normal (u axis, v axis).
+fn planar_axes(n: Vec3) -> (Vec3, Vec3) {
+    let up = if n.y.abs() > 0.9 { Vec3::Z } else { Vec3::Y };
+    let tu = up.cross(n).normalize_or_zero();
+    (tu, n.cross(tu))
 }
 
 /// World-scale planar UVs, so texture detail keeps its real size on every surface.
-fn planar_uv(p: Vec3, n: Vec3) -> [f32; 2] {
-    let up = if n.y.abs() > 0.9 { Vec3::Z } else { Vec3::Y };
-    let tu = up.cross(n).normalize_or_zero();
-    let tv = n.cross(tu);
-    [p.dot(tu) / crate::texture::TILE_M, -p.dot(tv) / crate::texture::TILE_M]
+fn planar_uv(p: Vec3, n: Vec3, off: [f32; 2]) -> [f32; 2] {
+    let (tu, tv) = planar_axes(n);
+    [p.dot(tu) / crate::texture::TILE_M + off[0], -p.dot(tv) / crate::texture::TILE_M + off[1]]
+}
+
+fn planar_tangent(n: Vec3) -> [f32; 4] {
+    let (tu, _) = planar_axes(n);
+    [tu.x, tu.y, tu.z, 1.0]
 }
 
 impl MeshBuilder {
@@ -28,9 +41,58 @@ impl MeshBuilder {
             self.pos.push(v.to_array());
             self.nrm.push(n.to_array());
             self.col.push(c);
-            self.uv.push(planar_uv(v, n));
+            self.uv.push(planar_uv(v, n, self.uv_off));
+            self.tan.push(planar_tangent(n));
         }
         self.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+
+    /// Free quad with explicit UVs and per-vertex colours (billboards, sprites).
+    pub fn quad_uv(&mut self, p: [Vec3; 4], uv: [[f32; 2]; 4], n: Vec3, c: [[f32; 4]; 4]) {
+        let b = self.pos.len() as u32;
+        let t = (p[1] - p[0]).normalize_or_zero();
+        for i in 0..4 {
+            self.pos.push(p[i].to_array());
+            self.nrm.push(n.to_array());
+            self.col.push(c[i]);
+            self.uv.push(uv[i]);
+            self.tan.push([t.x, t.y, t.z, 1.0]);
+        }
+        self.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+
+    /// Open truncated cone from `p0` along `dir`, radius r0 -> r1, colour c0 -> c1
+    /// (used for fake volumetric light beams with a vertex alpha fade).
+    #[allow(clippy::too_many_arguments)]
+    pub fn cone(&mut self, p0: Vec3, dir: Vec3, len: f32, r0: f32, r1: f32, sides: u32, c0: [f32; 4], c1: [f32; 4]) {
+        let ax = dir.normalize();
+        let t = ax.any_orthonormal_vector();
+        let bt = ax.cross(t);
+        let b = self.pos.len() as u32;
+        let p1 = p0 + ax * len;
+        for i in 0..=sides {
+            let a = std::f32::consts::TAU * i as f32 / sides as f32;
+            let d = t * a.cos() + bt * a.sin();
+            for (p, r, c, v) in [(p0, r0, c0, 0.0), (p1, r1, c1, 1.0)] {
+                self.pos.push((p + d * r).to_array());
+                self.nrm.push(d.to_array());
+                self.col.push(c);
+                self.uv.push([i as f32 / sides as f32, v]);
+                let tg = ax.cross(d);
+                self.tan.push([tg.x, tg.y, tg.z, 1.0]);
+            }
+        }
+        for i in 0..sides {
+            let k = b + i * 2;
+            self.idx.extend_from_slice(&[k, k + 2, k + 3, k, k + 3, k + 1]);
+        }
+    }
+
+    /// Chain of cylinders through the points (cables, bent pipes).
+    pub fn tube(&mut self, pts: &[Vec3], r: f32, sides: u32, col: [f32; 4]) {
+        for w in pts.windows(2) {
+            self.cylinder(w[0], w[1], r, sides, col);
+        }
     }
 
     /// Oriented box: centre, three orthonormal axes, half extents.
@@ -68,7 +130,9 @@ impl MeshBuilder {
                 self.pos.push((p + dir * r).to_array());
                 self.nrm.push(dir.to_array());
                 self.col.push(col);
-                self.uv.push([a * r / tm, (p0.y + along) / tm]);
+                self.uv.push([a * r / tm + self.uv_off[0], (p0.y + along) / tm + self.uv_off[1]]);
+                let tg = ax.cross(dir);
+                self.tan.push([tg.x, tg.y, tg.z, 1.0]);
             }
         }
         for i in 0..sides {
@@ -82,7 +146,8 @@ impl MeshBuilder {
             self.pos.push(p.to_array());
             self.nrm.push(n.to_array());
             self.col.push(col);
-            self.uv.push(planar_uv(p, n));
+            self.uv.push(planar_uv(p, n, self.uv_off));
+            self.tan.push(planar_tangent(n));
             for i in 0..=sides {
                 let a = std::f32::consts::TAU * i as f32 / sides as f32;
                 let dir = t * a.cos() + bt * a.sin();
@@ -90,7 +155,8 @@ impl MeshBuilder {
                 self.pos.push(q.to_array());
                 self.nrm.push(n.to_array());
                 self.col.push(col);
-                self.uv.push(planar_uv(q, n));
+                self.uv.push(planar_uv(q, n, self.uv_off));
+                self.tan.push(planar_tangent(n));
             }
             for i in 0..sides {
                 let (x, y) = (cb + 1 + i, cb + 2 + i);
@@ -103,12 +169,17 @@ impl MeshBuilder {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.idx.is_empty()
+    }
+
     pub fn build(self) -> Mesh {
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan)
             .with_inserted_indices(Indices::U32(self.idx))
     }
 }

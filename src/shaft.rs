@@ -1,12 +1,22 @@
-//! Procedural blockout of the shaft, the floating platform and scale references.
+//! Procedural shaft, floating platform and scale references.
 //! Units are metres, Y is up, the platform surface is at y = 0.
 //!
 //! Scale strategy: the shaft diameter is huge (kilometres) but the *detail* keeps a
 //! fixed real-world size (ring beam every 120 m, panels of 10-30 m, windows of ~1 m,
 //! human catwalks). A bigger shaft therefore shows many more elements, and the fog
 //! has a real density in metres, so the far wall fades like a distant mountain.
+//!
+//! Irregularity: modules come in variants and every instance is turned by a random
+//! multiple of 30 degrees (the shaft has 12 sides), the back wall is split into plates
+//! with their own tone and texture offset, and on top of that each module near the
+//! platform gets unique structures (tanks, sagging cable bundles, trusses, pipe runs,
+//! smoking vents). Risers run through a random number of modules.
+//!
+//! Everything here is on the far render layer and reaches the headset only through
+//! the panorama (see `panorama.rs`), except the platform.
 
 use crate::meshbuild::{MeshBuilder, Rng};
+use crate::panorama::{EYE, far};
 use bevy::camera::visibility::VisibilityRange;
 use bevy::prelude::*;
 use std::f32::consts::{PI, TAU};
@@ -27,6 +37,12 @@ pub const MODULE_H: f32 = 30.0 * S;
 const Z_OFF: f32 = -0.53 * MODULE_H;
 /// Enough modules that both ends dissolve completely in the fog (~13 km each way).
 const MODULES_EACH_WAY: i32 = 110;
+/// Modules each way with unique structures.
+const STRUCT_MODULES: i32 = 24;
+/// Modules each way with smoking vents.
+const SMOKE_MODULES: i32 = 10;
+/// Structures must stay behind the clinical skin (26.4 m from the wall face).
+const MAX_W: f32 = 23.0;
 
 /// LOD distances (metres from the camera to the module origin, i.e. vertical distance).
 const LOD_FINE: f32 = 1300.0;
@@ -34,7 +50,7 @@ const LOD_MID: f32 = 3500.0;
 
 /// Fog density in 1/m: real atmospheric perspective, independent of shaft size.
 pub fn fog_density(mood: f32) -> f32 {
-    0.00045 + (0.0003 - 0.00045) * mood
+    0.0007 + (0.0005 - 0.0007) * mood
 }
 
 #[derive(Component)]
@@ -46,20 +62,31 @@ pub struct MovingRing {
     pub high: f32,
 }
 
+/// A wall light; its colour follows the mood and the alarm.
+#[derive(Component)]
+pub struct PitLight {
+    pub mech: Vec3,
+    pub clin: Vec3,
+}
+
 pub struct Mats {
     pub wall: Handle<StandardMaterial>,
     pub lamp: Handle<StandardMaterial>,
     pub lamp_alt: Handle<StandardMaterial>,
     pub figure: Handle<StandardMaterial>,
     pub platform: Handle<StandardMaterial>,
-    pub skin: Handle<StandardMaterial>,
+    /// a few slightly different whites, so the closed skin is not one flat surface
+    pub skins: Vec<Handle<StandardMaterial>>,
     pub skin_line: Handle<StandardMaterial>,
+    pub halo: Handle<StandardMaterial>,
+    pub beam: Handle<StandardMaterial>,
+    pub smoke: Handle<StandardMaterial>,
 }
 
 const GREY: [f32; 4] = [0.75, 0.75, 0.73, 1.0];
-const DARK: [f32; 4] = [0.35, 0.35, 0.34, 1.0];
-const HAZ_Y: [f32; 4] = [1.0, 0.72, 0.05, 1.0];
-const HAZ_K: [f32; 4] = [0.08, 0.08, 0.08, 1.0];
+const DARK: [f32; 4] = [0.3, 0.3, 0.29, 1.0];
+const HAZ_Y: [f32; 4] = [0.85, 0.6, 0.05, 1.0];
+const HAZ_K: [f32; 4] = [0.06, 0.06, 0.06, 1.0];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 /// Local frame of one wall facet.
@@ -89,10 +116,19 @@ fn face_width(apothem: f32) -> f32 {
     2.0 * apothem * (PI / SIDES as f32).tan()
 }
 
+/// Random surface tone: mostly greys, some darker, some rusty.
 fn tone(rng: &mut Rng) -> [f32; 4] {
-    let g = rng.range(0.55, 1.0);
-    let warm = rng.range(-0.04, 0.04);
-    [g + warm, g, g - warm, 1.0]
+    let g = rng.range(0.35, 1.0);
+    if rng.chance(0.15) {
+        [g * 0.95, g * 0.7, g * 0.5, 1.0]
+    } else {
+        let warm = rng.range(-0.04, 0.04);
+        [g + warm, g, g - warm, 1.0]
+    }
+}
+
+fn shuffle_uv(mb: &mut MeshBuilder, rng: &mut Rng) {
+    mb.uv_off = [rng.f(), rng.f()];
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -106,12 +142,27 @@ fn hazard_band(mb: &mut MeshBuilder, f: &Facet, u0: f32, u1: f32, v: f32, w: f32
     }
 }
 
+/// Splits [a, b] into random pieces between `lo` and `hi` long.
+fn partition(rng: &mut Rng, a: f32, b: f32, lo: f32, hi: f32) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
+    let mut x = a;
+    while x < b - 0.01 {
+        let mut w = rng.range(lo, hi);
+        if b - (x + w) < lo {
+            w = b - x;
+        }
+        out.push((x, x + w));
+        x += w;
+    }
+    out
+}
+
 /// All LOD meshes of one module variant.
 struct ModuleMeshes {
-    /// far: back wall + ring beam, one emissive strip per facet
+    /// far: back wall plates + ring beam, sparse lamp strips
     shell: Mesh,
     shell_lamp: Mesh,
-    /// mid: panel grid, pipes, beam lamp fixtures, lit windows and vents
+    /// mid: panel grid, beam lamp fixtures, lit windows and vents
     mid: Mesh,
     mid_lamp: Mesh,
     mid_lamp_alt: Mesh,
@@ -132,60 +183,76 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
     let mut mid_lamp_alt = MeshBuilder::default();
     let mut fine = MeshBuilder::default();
     let mut fine_lamp = MeshBuilder::default();
-    let mut rng = Rng::new(100 + var);
-    let mut spine = Rng::new(7);
+    let mut rng = Rng::new(100 + var * 7919);
 
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
         let ax = f.ax();
-        // ---- shell (always visible)
-        shell.cuboid(f.p(0.0, h / 2.0, -0.5 * s), ax, [w_face / 2.0 + 3.0 * s, h / 2.0, 0.5 * s], GREY);
-        shell.cuboid(f.p(0.0, h - 1.3 * s, 3.0 * s), ax, [w_face / 2.0 + 1.5 * s, 1.3 * s, 3.0 * s], GREY);
+        // ---- shell (always visible): back wall in irregular plates
+        for (v0, v1) in partition(&mut rng, 0.0, h, 15.0, 50.0) {
+            for (u0, u1) in partition(&mut rng, -w_face / 2.0 - 3.0 * s, w_face / 2.0 + 3.0 * s, 30.0, 140.0) {
+                shuffle_uv(&mut shell, &mut rng);
+                let d = rng.range(0.4, 1.6) * s;
+                shell.cuboid(f.p((u0 + u1) / 2.0, (v0 + v1) / 2.0, d / 2.0 - s), ax, [(u1 - u0) / 2.0 - 0.1, (v1 - v0) / 2.0 - 0.1, d / 2.0], tone(&mut rng));
+            }
+        }
+        shell.uv_off = [0.0, 0.0];
+        let beam_d = rng.range(2.4, 3.4) * s;
+        shell.cuboid(f.p(0.0, h - 1.3 * s, beam_d), ax, [w_face / 2.0 + 1.5 * s, 1.3 * s, beam_d], GREY);
         shell.cuboid(f.p(w_face / 2.0, h / 2.0, 2.6 * s), ax, [2.4 * s, h / 2.0, 2.6 * s], DARK);
-        shell_lamp.cuboid(f.p(0.0, h - 2.65 * s, 5.6 * s), ax, [w_face / 2.0 - 1.2 * s, 0.06 * s, 0.12 * s], [0.6, 0.6, 0.6, 1.0]);
+        for (u0, u1) in partition(&mut rng, -w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s, 20.0, 120.0) {
+            if rng.chance(0.35) {
+                shell_lamp.cuboid(f.p((u0 + u1) / 2.0, h - 2.65 * s, 2.0 * beam_d), ax, [(u1 - u0) / 2.0 - 2.0, 0.06 * s, 0.12 * s], [0.6, 0.6, 0.6, 1.0]);
+            }
+        }
 
         // ---- mid
         let mut c0 = -w_face / 2.0;
         while c0 < w_face / 2.0 - 1.0 {
             let cw = (rng.range(4.0, 8.0) * s).min(w_face / 2.0 - c0);
             let mut v = 0.0;
+            // some columns are left bare, which breaks the regular grid
+            let bare = rng.chance(0.2);
             while v < h - 0.5 * s {
-                let ph = ([2.0f32, 3.0, 4.0, 5.0, 7.5][rng.int(0, 4) as usize] * s).min(h - v);
-                let dep = rng.range(0.1, 0.9) * s;
-                let gap = 0.06 * s;
-                mid.cuboid(f.p(c0 + cw / 2.0, v + ph / 2.0, dep / 2.0), ax, [cw / 2.0 - gap, ph / 2.0 - gap, dep / 2.0], tone(&mut rng));
+                let ph = ([2.0f32, 3.0, 4.0, 5.0, 7.5, 12.0][rng.int(0, 5) as usize] * s).min(h - v);
+                if !bare || rng.chance(0.15) {
+                    let dep = rng.range(0.1, 1.2) * s;
+                    let gap = 0.06 * s;
+                    shuffle_uv(&mut mid, &mut rng);
+                    mid.cuboid(f.p(c0 + cw / 2.0, v + ph / 2.0, dep / 2.0), ax, [cw / 2.0 - gap, ph / 2.0 - gap, dep / 2.0], tone(&mut rng));
+                }
                 v += ph;
             }
             c0 += cw;
         }
+        mid.uv_off = [0.0, 0.0];
         for k in 0..7 {
             mid.cuboid(f.p(w_face / 2.0, (2.0 + k as f32 * 4.0) * s, 5.4 * s), ax, [1.5 * s, 0.25 * s, 0.25 * s], GREY);
         }
-        hazard_band(&mut mid, &f, -w_face / 2.0, w_face / 2.0, h - 0.4 * s, 6.05 * s, 0.4 * s, 0.8 * s);
+        if rng.chance(0.5) {
+            hazard_band(&mut mid, &f, -w_face / 2.0, w_face / 2.0, h - 0.4 * s, 2.0 * beam_d + 0.05 * s, 0.4 * s, 0.8 * s);
+        }
         let nl = (w_face / (2.4 * s)) as i32;
+        let lit = rng.range(0.15, 0.6);
         for g in 0..nl {
             let u = -w_face / 2.0 + 1.2 * s + (g as f32 + 0.5) * (w_face - 2.4 * s) / nl as f32;
-            if rng.chance(0.88) {
-                mid_lamp.cuboid(f.p(u, h - 2.65 * s, 5.6 * s), ax, [0.55 * s, 0.06 * s, 0.12 * s], WHITE);
+            if rng.chance(lit) {
+                mid_lamp.cuboid(f.p(u, h - 2.65 * s, 2.0 * beam_d), ax, [0.55 * s, 0.06 * s, 0.12 * s], WHITE);
             }
         }
-        // spine pipes run continuously through every module
-        for _ in 0..((spine.int(3, 7) as f32 * per).ceil() as u32).min(40) {
-            let r = [0.2, 0.3, 0.45, 0.7, 1.0, 1.4][spine.int(0, 5) as usize] * s;
-            let u = spine.range(-w_face / 2.0 + 3.0 * s, w_face / 2.0 - 3.0 * s);
-            let w = 1.2 * s + r + spine.range(0.0, 1.5) * s;
-            let c = tone(&mut spine);
-            mid.cylinder(f.p(u, 0.0, w), f.p(u, h, w), r, 8, c);
-        }
-        // lit window bands and readouts
-        for _ in 0..((rng.int(2, 6) as f32 * per) as u32).min(60) {
-            let u = rng.range(-w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s);
+        // lit window bands and readouts, clustered rather than evenly spread
+        let cluster_u = rng.range(-w_face / 2.0, w_face / 2.0);
+        for _ in 0..((rng.int(1, 5) as f32 * per) as u32).min(50) {
+            let u = (cluster_u + rng.range(-1.0, 1.0) * rng.range(0.0, w_face * 0.5)).clamp(-w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s);
             let v = rng.range(s, h - 4.0 * s);
-            let (nx, ny) = (rng.int(1, 6), rng.int(1, 3));
+            let (nx, ny) = (rng.int(1, 8), rng.int(1, 3));
             let cell = rng.range(0.2, 0.45) * s;
             mid.cuboid(f.p(u, v, 1.05 * s), ax, [nx as f32 * cell * 0.6 + 0.15 * s, ny as f32 * cell * 0.6 + 0.15 * s, 0.15 * s], DARK);
             for a in 0..nx {
                 for b in 0..ny {
+                    if rng.chance(0.4) {
+                        continue;
+                    }
                     let uu = u + (a as f32 - (nx - 1) as f32 / 2.0) * cell * 1.15;
                     let vv = v + (b as f32 - (ny - 1) as f32 / 2.0) * cell * 1.15;
                     let target = if rng.chance(0.6) { &mut mid_lamp_alt } else { &mut mid_lamp };
@@ -195,39 +262,56 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
         }
         // vents
         for _ in 0..((rng.int(0, 2) as f32 * per).round() as u32).min(20) {
-            let (vw, vh) = [(5.0, 3.0), (7.0, 4.0), (4.0, 6.0)][rng.int(0, 2) as usize];
+            let (vw, vh) = [(5.0, 3.0), (7.0, 4.0), (4.0, 6.0), (10.0, 2.0)][rng.int(0, 3) as usize];
             let (vw, vh) = (vw * s, vh * s);
             let u = rng.range(-w_face / 2.0 + vw / 2.0 + 2.0 * s, w_face / 2.0 - vw / 2.0 - 2.0 * s);
             let vc = rng.range(3.0 * s, h - vh - 4.0 * s) + vh / 2.0;
-            mid_lamp_alt.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], WHITE);
+            if rng.chance(0.6) {
+                mid_lamp_alt.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], WHITE);
+            } else {
+                mid.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], HAZ_K);
+            }
             for k in 0..7 {
                 let vs = vc - vh / 2.0 + (k as f32 + 0.5) * vh / 7.0;
                 mid.cuboid(f.p(u, vs, 1.2 * s), ax, [vw / 2.0, 0.04 * s, 0.25 * s], DARK);
             }
-            hazard_band(&mut mid, &f, u - vw / 2.0 - 0.5 * s, u + vw / 2.0 + 0.5 * s, vc - vh / 2.0 - 0.3 * s, 1.25 * s, 0.3 * s, 0.8 * s);
+            if rng.chance(0.5) {
+                hazard_band(&mut mid, &f, u - vw / 2.0 - 0.5 * s, u + vw / 2.0 + 0.5 * s, vc - vh / 2.0 - 0.3 * s, 1.25 * s, 0.3 * s, 0.8 * s);
+            }
         }
 
         // ---- fine (near modules only)
-        for _ in 0..((rng.int(1, 3) as f32 * per) as u32).min(30) {
-            let (hu, hv, hw) = (rng.range(2.5, 5.5) * s, rng.range(2.5, 7.0) * s, rng.range(1.5, 2.6) * s); // stays behind the clinical skin
+        for _ in 0..((rng.int(0, 4) as f32 * per) as u32).min(30) {
+            let (hu, hv, hw) = (rng.range(2.5, 7.5) * s, rng.range(2.5, 9.0) * s, rng.range(1.0, 2.6) * s);
             let u = rng.range(-w_face / 2.0 + hu + 2.5 * s, w_face / 2.0 - hu - 2.5 * s);
-            let v = rng.range(hv + s, h - hv - 3.0 * s);
+            let v = rng.range(hv + s, (h - hv - 3.0 * s).max(hv + s + 0.1));
+            shuffle_uv(&mut fine, &mut rng);
             fine.cuboid(f.p(u, v, 0.8 * s + hw), ax, [hu, hv, hw], tone(&mut rng));
-            hazard_band(&mut fine, &f, u - hu, u + hu, v + hv + 0.15 * s, 0.8 * s + 2.0 * hw + 0.05 * s, 0.15 * s, 0.8 * s);
-            if rng.chance(0.7) {
+            if rng.chance(0.4) {
+                hazard_band(&mut fine, &f, u - hu, u + hu, v + hv + 0.15 * s, 0.8 * s + 2.0 * hw + 0.05 * s, 0.15 * s, 0.8 * s);
+            }
+            if rng.chance(0.5) {
                 fine_lamp.cuboid(f.p(u + hu * 0.55, v + hv * 0.5, 0.8 * s + 2.0 * hw + 0.1 * s), ax, [hu * 0.25, 0.25 * s, 0.05 * s], WHITE);
             }
         }
-        for _ in 0..((w_face * 1.2) as u32).min(700) {
-            let u = rng.range(-w_face / 2.0 + 0.5 * s, w_face / 2.0 - 0.5 * s);
-            let v = rng.range(0.5 * s, h - 2.5 * s);
-            let sz = rng.range(0.4f32.ln(), (2.5 * s).ln()).exp();
-            let (hu, hv, hw) = (sz * rng.range(0.4, 1.4), sz * rng.range(0.3, 1.0), sz * rng.range(0.15, 0.6));
-            let w0 = rng.range(0.3, 1.0) * s;
-            fine.cuboid(f.p(u, v, w0 + hw), ax, [hu, hv, hw], tone(&mut rng));
+        // greebles in patches of different density instead of an even sprinkle
+        let patches = rng.int(2, 6);
+        for _ in 0..patches {
+            let pu = rng.range(-w_face / 2.0, w_face / 2.0);
+            let pv = rng.range(0.0, h);
+            let pr = rng.range(20.0, 120.0);
+            for _ in 0..((w_face * 1.2 / patches as f32 * rng.range(0.3, 1.7)) as u32).min(400) {
+                let u = (pu + rng.range(-pr, pr)).clamp(-w_face / 2.0 + 0.5 * s, w_face / 2.0 - 0.5 * s);
+                let v = (pv + rng.range(-pr, pr) * 0.6).clamp(0.5 * s, h - 2.5 * s);
+                let sz = rng.range(0.4f32.ln(), (2.5 * s).ln()).exp();
+                let (hu, hv, hw) = (sz * rng.range(0.4, 1.4), sz * rng.range(0.3, 1.0), sz * rng.range(0.15, 0.6));
+                let w0 = rng.range(0.3, 1.0) * s;
+                fine.cuboid(f.p(u, v, w0 + hw), ax, [hu, hv, hw], tone(&mut rng));
+            }
         }
         // human-sized catwalk, doors and ladder: real size on purpose
-        if var % 2 == 0 {
+        if var % 2 == 0 && (i == 0 || i == 3 || i == 7 || rng.chance(0.5)) {
+            fine.uv_off = [0.0, 0.0];
             let v = 0.4 * h;
             let wc = 1.2 * s + 1.0;
             fine.cuboid(f.p(0.0, v, wc + 1.0), ax, [w_face / 2.0 + 2.0 * s, 0.08, 1.0], DARK);
@@ -266,6 +350,201 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
     }
 }
 
+/// Unique large structures for one module (world space, module base at `y0`).
+struct Structures {
+    body: MeshBuilder,
+    lamp: MeshBuilder,
+    lamp_alt: MeshBuilder,
+    smoke: MeshBuilder,
+    halo: MeshBuilder,
+}
+
+/// Billboard quad facing the panorama eye (sprites only need to look right from there).
+fn billboard(mb: &mut MeshBuilder, c: Vec3, half: f32, col: [f32; 4]) {
+    let to_eye = (EYE - c).normalize();
+    let right = Vec3::Y.cross(to_eye).normalize_or(Vec3::X);
+    let up = to_eye.cross(right);
+    let (r, u) = (right * half, up * half);
+    mb.quad_uv([c - r - u, c + r - u, c + r + u, c - r + u], [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], to_eye, [col; 4]);
+}
+
+/// Smoke plume rising from `base`: a grid whose vertex alpha gives the shape (dense
+/// at the vent, widening and fading upwards, soft sides). The texture scrolls up.
+fn plume(mb: &mut MeshBuilder, rng: &mut Rng, base: Vec3, height: f32, w0: f32, w1: f32) {
+    let to_eye = (EYE - base).with_y(0.0).normalize();
+    let right = Vec3::Y.cross(to_eye).normalize();
+    let drift = right * rng.range(-0.3, 0.3) * height;
+    let (u_off, rows) = (rng.f(), 6);
+    let point = |x: f32, t: f32| base + right * x * (w0 + (w1 - w0) * t) + Vec3::Y * t * height + drift * t * t;
+    let alpha = |x: f32, t: f32| (1.0 - x.abs()) * (1.0 - t).powf(1.3) * (t * 10.0).min(1.0);
+    let uvs = |x: f32, t: f32| [u_off + x * 0.5 * (w0 + (w1 - w0) * t) / 60.0, -t * height / 60.0];
+    for r in 0..rows {
+        let (t0, t1) = (r as f32 / rows as f32, (r + 1) as f32 / rows as f32);
+        for (x0, x1) in [(-1.0f32, 0.0f32), (0.0, 1.0)] {
+            let corners = [(x0, t0), (x1, t0), (x1, t1), (x0, t1)];
+            mb.quad_uv(
+                corners.map(|(x, t)| point(x, t)),
+                corners.map(|(x, t)| uvs(x, t)),
+                to_eye,
+                corners.map(|(x, t)| [1.0, 1.0, 1.0, alpha(x, t)]),
+            );
+        }
+    }
+}
+
+fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: bool) -> Structures {
+    let h = MODULE_H;
+    let w_face = face_width(apothem);
+    let mut rng = Rng::new(seed);
+    let mut st = Structures {
+        body: MeshBuilder::default(),
+        lamp: MeshBuilder::default(),
+        lamp_alt: MeshBuilder::default(),
+        smoke: MeshBuilder::default(),
+        halo: MeshBuilder::default(),
+    };
+    for i in 0..SIDES {
+        let f = Facet::new(i, apothem);
+        let ax = f.ax();
+        let b = &mut st.body;
+        // storage tank, half sunk into the wall
+        if rng.chance(0.14) {
+            let r = rng.range(8.0, 19.0);
+            let th = rng.range(40.0, 110.0).min(h - 10.0);
+            let u = rng.range(-w_face / 2.0 + r + 10.0, w_face / 2.0 - r - 10.0);
+            let w = (r * 0.25 + 2.0).min(MAX_W - r);
+            let v = y0 + rng.range(4.0, h - th - 4.0);
+            shuffle_uv(b, &mut rng);
+            let c = tone(&mut rng);
+            b.cylinder(f.p(u, v, w), f.p(u, v + th, w), r, 24, c);
+            let mut bv = v + rng.range(4.0, 10.0);
+            while bv < v + th - 2.0 {
+                b.cylinder(f.p(u, bv, w), f.p(u, bv + 0.8, w), r + 0.4, 24, DARK);
+                bv += rng.range(6.0, 16.0);
+            }
+            if rng.chance(0.5) {
+                st.lamp_alt.cuboid(f.p(u, v + th * 0.7, w + r + 0.45), ax, [r * 0.3, 0.3, 0.05], WHITE);
+            }
+        }
+        // sagging cable bundle between two anchor points
+        if rng.chance(0.35) {
+            let span = rng.range(60.0, 300.0).min(w_face - 20.0);
+            let u0 = rng.range(-w_face / 2.0 + 5.0, w_face / 2.0 - span - 5.0);
+            let v = y0 + rng.range(30.0, h + 20.0);
+            let sag = rng.range(8.0, 45.0);
+            let n = rng.int(3, 8);
+            for c in 0..n {
+                let r = rng.range(0.25, 0.9);
+                let w = rng.range(4.0, 16.0) + c as f32 * 0.3;
+                let dv = rng.range(-2.0, 2.0);
+                let csag = sag * rng.range(0.8, 1.25);
+                let pts: Vec<Vec3> = (0..=16)
+                    .map(|k| {
+                        let t = k as f32 / 16.0;
+                        f.p(u0 + span * t, v + dv - csag * 4.0 * t * (1.0 - t), w)
+                    })
+                    .collect();
+                b.tube(&pts, r, 6, if rng.chance(0.2) { HAZ_Y } else { HAZ_K });
+            }
+            for u in [u0, u0 + span] {
+                b.cuboid(f.p(u, v, 9.0), ax, [2.0, 3.0, 9.0], DARK);
+            }
+        }
+        // box truss gantry
+        if rng.chance(0.18) {
+            let len = rng.range(80.0, 360.0).min(w_face - 20.0);
+            let u0 = rng.range(-w_face / 2.0 + 5.0, w_face / 2.0 - len - 5.0);
+            let v = y0 + rng.range(10.0, h - 10.0);
+            let (tw, thh) = (rng.range(3.0, 6.0), rng.range(4.0, 8.0));
+            let w = rng.range(8.0, MAX_W - tw - 1.0);
+            let r = 0.25;
+            let c = tone(&mut rng);
+            let chord = |a: f32, b: f32| [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(x, y)| (a * x, b * y));
+            for (dw, dv) in chord(tw / 2.0, thh / 2.0) {
+                b.cylinder(f.p(u0, v + dv, w + dw), f.p(u0 + len, v + dv, w + dw), r * 1.6, 5, c);
+            }
+            let bay = thh * 1.1;
+            let mut u = u0;
+            let mut flip = false;
+            while u + bay <= u0 + len + 0.1 {
+                for dw in [-tw / 2.0, tw / 2.0] {
+                    let (a, bb) = if flip { (-thh / 2.0, thh / 2.0) } else { (thh / 2.0, -thh / 2.0) };
+                    b.cylinder(f.p(u, v + a, w + dw), f.p(u + bay, v + bb, w + dw), r, 4, c);
+                    b.cylinder(f.p(u, v - thh / 2.0, w + dw), f.p(u, v + thh / 2.0, w + dw), r, 4, c);
+                }
+                flip = !flip;
+                u += bay;
+            }
+            if rng.chance(0.6) {
+                st.lamp.cuboid(f.p(u0 + len * rng.range(0.2, 0.8), v - thh / 2.0 - 0.3, w), ax, [2.0, 0.15, 0.6], WHITE);
+            }
+        }
+        // big pipe run: horizontal, then an elbow down the wall
+        if rng.chance(0.3) {
+            let r = rng.range(1.2, 4.0);
+            let len = rng.range(60.0, 300.0).min(w_face - 30.0);
+            let u0 = rng.range(-w_face / 2.0 + 10.0, w_face / 2.0 - len - 10.0);
+            let v = y0 + rng.range(10.0, h);
+            let w = rng.range(r + 2.0, MAX_W - r);
+            let drop = rng.range(30.0, 160.0);
+            let c = tone(&mut rng);
+            shuffle_uv(b, &mut rng);
+            b.tube(&[f.p(u0, v - drop, w), f.p(u0, v, w), f.p(u0 + len, v, w)], r, 12, c);
+            let mut fu = u0 + 8.0;
+            while fu < u0 + len {
+                b.cylinder(f.p(fu, v, w), f.p(fu + 0.6, v, w), r * 1.25, 12, DARK);
+                fu += rng.range(10.0, 25.0);
+            }
+        }
+        // smoking vent
+        if smoke && rng.chance(0.2) {
+            let (vw, vh) = (rng.range(12.0, 30.0), rng.range(6.0, 14.0));
+            let u = rng.range(-w_face / 2.0 + vw, w_face / 2.0 - vw);
+            let v = y0 + rng.range(10.0, h - vh - 10.0);
+            st.lamp_alt.cuboid(f.p(u, v, 4.2), ax, [vw / 2.0, vh / 2.0, 0.1], WHITE);
+            for k in 0..6 {
+                let vs = v - vh / 2.0 + (k as f32 + 0.5) * vh / 6.0;
+                b.cuboid(f.p(u, vs, 5.0), ax, [vw / 2.0, 0.15, 0.8], DARK);
+            }
+            b.cuboid(f.p(u, v, 2.0), ax, [vw / 2.0 + 1.5, vh / 2.0 + 1.5, 2.0], DARK);
+            billboard(&mut st.halo, f.p(u, v, 8.0), vw * 1.2, [1.0, 0.7, 0.5, 0.6]);
+            let base = f.p(u, v + vh / 2.0, 7.0);
+            let (ph, pw) = (rng.range(60.0, 180.0), vw * rng.range(1.5, 3.0));
+            plume(&mut st.smoke, &mut rng, base, ph, vw * 0.5, pw);
+        }
+    }
+    st
+}
+
+/// Vertical risers that run continuously through a random number of modules.
+fn build_risers(apothem: f32) -> MeshBuilder {
+    let w_face = face_width(apothem);
+    let mut mb = MeshBuilder::default();
+    let mut rng = Rng::new(7);
+    let span = MODULES_EACH_WAY as f32 * MODULE_H;
+    for i in 0..SIDES {
+        let f = Facet::new(i, apothem);
+        let count = (rng.int(3, 9) as f32 * w_face / 500.0).ceil() as u32;
+        for _ in 0..count.min(40) {
+            let r = [0.8, 1.2, 1.8, 2.8, 4.0, 5.6][rng.int(0, 5) as usize];
+            let u = rng.range(-w_face / 2.0 + 12.0, w_face / 2.0 - 12.0);
+            let w = (4.8 + r + rng.range(0.0, 6.0)).min(MAX_W - r);
+            let len = rng.range(2.0, 30.0) * MODULE_H;
+            let y0 = rng.range(-span, span - len);
+            shuffle_uv(&mut mb, &mut rng);
+            let c = tone(&mut rng);
+            mb.cylinder(f.p(u, y0, w), f.p(u, y0 + len, w), r, 10, c);
+            // clamps every module
+            let mut y = (y0 / MODULE_H).ceil() * MODULE_H + Z_OFF;
+            while y < y0 + len {
+                mb.cylinder(f.p(u, y - 1.0, w), f.p(u, y + 1.0, w), r * 1.3, 10, DARK);
+                y += MODULE_H;
+            }
+        }
+    }
+    mb
+}
+
 /// The platform: a plain floating disc, nothing on it.
 fn build_platform() -> Mesh {
     let mut s = MeshBuilder::default();
@@ -284,7 +563,8 @@ fn build_ring(apothem: f32) -> (Mesh, Mesh) {
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
         let ax = f.ax();
-        m.cuboid(f.p(0.0, 0.0, 4.5 * s + depth / 2.0), ax, [w_face / 2.0 - s, 3.0 * s, depth / 2.0], GREY);
+        shuffle_uv(&mut m, &mut rng);
+        m.cuboid(f.p(0.0, 0.0, 4.5 * s + depth / 2.0), ax, [w_face / 2.0 - s, 3.0 * s, depth / 2.0], tone(&mut rng));
         hazard_band(&mut m, &f, -w_face / 2.0 + s, w_face / 2.0 - s, -3.2 * s, 4.5 * s + depth + 0.06 * s, 0.4 * s, 0.8 * s);
         let n = (w_face / 6.0) as u32;
         for _ in 0..n {
@@ -295,8 +575,10 @@ fn build_ring(apothem: f32) -> (Mesh, Mesh) {
         }
         let nl = (w_face / (3.0 * s)) as i32;
         for k in 0..nl {
-            let u = -w_face * 0.45 + k as f32 * w_face * 0.9 / nl as f32;
-            l.cuboid(f.p(u, -3.05 * s, 4.5 * s + depth * 0.7), ax, [0.5 * s, 0.05 * s, 0.5 * s], WHITE);
+            if rng.chance(0.5) {
+                let u = -w_face * 0.45 + k as f32 * w_face * 0.9 / nl as f32;
+                l.cuboid(f.p(u, -3.05 * s, 4.5 * s + depth * 0.7), ax, [0.5 * s, 0.05 * s, 0.5 * s], WHITE);
+            }
         }
         m.cuboid(f.p(w_face / 2.0 - 1.5 * s, 0.0, 3.4 * s), ax, [0.6 * s, 3.5 * s, 0.4 * s], DARK);
     }
@@ -319,7 +601,7 @@ fn range(start: f32, end: f32) -> VisibilityRange {
 
 /// Spawns everything that depends on the shaft size. Called again when the size changes.
 pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats, apothem: f32) {
-    const VARIANTS: u64 = 4;
+    const VARIANTS: u64 = 8;
     let h = MODULE_H;
     let mods: Vec<[Handle<Mesh>; 7]> = (0..VARIANTS)
         .map(|v| {
@@ -328,29 +610,46 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
         })
         .collect();
     let mut pick = Rng::new(3);
+    let part = |commands: &mut Commands, mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, t: Transform, r: Option<VisibilityRange>| {
+        let mut e = commands.spawn((ShaftPart, far(), Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), t));
+        if let Some(r) = r {
+            e.insert(r);
+        }
+    };
     for k in -MODULES_EACH_WAY..=MODULES_EACH_WAY {
-        let v = if k == 0 { 0 } else { (pick.next_u64() % VARIANTS) as usize };
-        let t = Transform::from_xyz(0.0, k as f32 * h + Z_OFF, 0.0);
+        // the platform's module keeps variant 0 unturned: the scale figures stand on its catwalk
+        let (v, turn) = if k == 0 { (0, 0) } else { ((pick.next_u64() % VARIANTS) as usize, pick.int(0, 11)) };
+        let y = k as f32 * h + Z_OFF;
+        let t = Transform::from_xyz(0.0, y, 0.0).with_rotation(Quat::from_rotation_y(turn as f32 * TAU / SIDES as f32));
         let m = &mods[v];
-        let near = (k as f32 * h + Z_OFF).abs();
-        // far shell everywhere beyond the mid range
+        let near = y.abs();
         if near > LOD_MID - h {
-            commands.spawn((ShaftPart, Mesh3d(m[0].clone()), MeshMaterial3d(mats.wall.clone()), t, range(LOD_MID, f32::MAX)));
-            commands.spawn((ShaftPart, Mesh3d(m[1].clone()), MeshMaterial3d(mats.lamp.clone()), t, range(LOD_MID, f32::MAX)));
+            part(commands, &m[0], &mats.wall, t, Some(range(LOD_MID, f32::MAX)));
+            part(commands, &m[1], &mats.lamp, t, Some(range(LOD_MID, f32::MAX)));
         }
         if near < LOD_MID + h {
             // the mid level reuses the shell's back wall and beam
-            commands.spawn((ShaftPart, Mesh3d(m[0].clone()), MeshMaterial3d(mats.wall.clone()), t, range(0.0, LOD_MID)));
-            commands.spawn((ShaftPart, Mesh3d(m[2].clone()), MeshMaterial3d(mats.wall.clone()), t, range(0.0, LOD_MID)));
-            commands.spawn((ShaftPart, Mesh3d(m[3].clone()), MeshMaterial3d(mats.lamp.clone()), t, range(0.0, LOD_MID)));
-            commands.spawn((ShaftPart, Mesh3d(m[4].clone()), MeshMaterial3d(mats.lamp_alt.clone()), t, range(0.0, LOD_MID)));
+            part(commands, &m[0], &mats.wall, t, Some(range(0.0, LOD_MID)));
+            part(commands, &m[2], &mats.wall, t, Some(range(0.0, LOD_MID)));
+            part(commands, &m[3], &mats.lamp, t, Some(range(0.0, LOD_MID)));
+            part(commands, &m[4], &mats.lamp_alt, t, Some(range(0.0, LOD_MID)));
         }
         if near < LOD_FINE + h {
-            commands.spawn((ShaftPart, Mesh3d(m[5].clone()), MeshMaterial3d(mats.wall.clone()), t, range(0.0, LOD_FINE)));
-            commands.spawn((ShaftPart, Mesh3d(m[6].clone()), MeshMaterial3d(mats.lamp.clone()), t, range(0.0, LOD_FINE)));
+            part(commands, &m[5], &mats.wall, t, Some(range(0.0, LOD_FINE)));
+            part(commands, &m[6], &mats.lamp, t, Some(range(0.0, LOD_FINE)));
+        }
+        if k.abs() <= STRUCT_MODULES {
+            let st = build_structures(apothem, y, 1000 + (k + 500) as u64, k.abs() <= SMOKE_MODULES);
+            for (mb, mat) in [(st.body, &mats.wall), (st.lamp, &mats.lamp), (st.lamp_alt, &mats.lamp_alt), (st.smoke, &mats.smoke), (st.halo, &mats.halo)] {
+                if !mb.is_empty() {
+                    part(commands, &meshes.add(mb.build()), mat, Transform::IDENTITY, None);
+                }
+            }
         }
     }
+    part(commands, &meshes.add(build_risers(apothem).build()), &mats.wall, Transform::IDENTITY, None);
 
+    // the platform is the only thing drawn live in the headset (default layer)
     commands.spawn((ShaftPart, Mesh3d(meshes.add(build_platform())), MeshMaterial3d(mats.platform.clone())));
 
     crate::reconfig::spawn_shutters(commands, meshes, mats, apothem, Z_OFF);
@@ -361,31 +660,70 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
     let wc = 1.2 * S + 1.0;
     for i in [0usize, 3, 7] {
         let p = Facet::new(i, apothem).p(1.5, catwalk_y, wc + 1.0);
-        commands.spawn((ShaftPart, Mesh3d(fig.clone()), MeshMaterial3d(mats.figure.clone()), Transform::from_translation(p).looking_at(Vec3::new(0.0, p.y, 0.0), Vec3::Y)));
+        part(commands, &fig, &mats.figure, Transform::from_translation(p).looking_at(Vec3::new(0.0, p.y, 0.0), Vec3::Y), None);
     }
 
-    // the moving ring used to test vection comfort
+    // the moving ring
     let (r, rl) = build_ring(apothem);
     let (low, high) = (Z_OFF + h + 6.0 * S, Z_OFF + 6.0 * h);
     commands
-        .spawn((ShaftPart, MovingRing { low, high }, Transform::from_xyz(0.0, high, 0.0), Visibility::default()))
+        .spawn((ShaftPart, far(), MovingRing { low, high }, Transform::from_xyz(0.0, high, 0.0), Visibility::default()))
         .with_children(|c| {
-            c.spawn((Mesh3d(meshes.add(r)), MeshMaterial3d(mats.wall.clone())));
-            c.spawn((Mesh3d(meshes.add(rl)), MeshMaterial3d(mats.lamp.clone())));
+            c.spawn((far(), Mesh3d(meshes.add(r)), MeshMaterial3d(mats.wall.clone())));
+            c.spawn((far(), Mesh3d(meshes.add(rl)), MeshMaterial3d(mats.lamp.clone())));
         });
 
-    // a few real lights on the nearest ring beams, grazing the wall
-    let reach = apothem / 45.0;
-    for k in [0i32, 1] {
-        for i in (0..SIDES).step_by(2) {
-            let f = Facet::new(i + k as usize, apothem);
-            let y = Z_OFF + k as f32 * h - 3.0 * S;
-            commands.spawn((
-                ShaftPart,
-                PointLight { intensity: 1.0e7 * reach * reach, range: apothem * 2.5, radius: S, shadow_maps_enabled: false, ..default() },
-                Transform::from_translation(f.p(0.0, y, 7.0 * S)),
-            ));
-        }
+    spawn_lights(commands, meshes, mats, apothem);
+}
+
+/// Irregular pools of light: spotlights under the ring beams, grazing down the wall,
+/// each with a halo and a faint beam in the haze. Most are sodium, a few white or red.
+fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats, apothem: f32) {
+    let w_face = face_width(apothem);
+    let mut rng = Rng::new(4242);
+    let mut halos = MeshBuilder::default();
+    let mut beams = MeshBuilder::default();
+    let count = 72;
+    for _ in 0..count {
+        let f = Facet::new(rng.int(0, SIDES as u32 - 1) as usize, apothem);
+        // denser near the platform, thinning out with height
+        let k = (rng.range(-1.0f32, 1.0).powi(3) * 12.0).round() as i32;
+        let u = rng.range(-w_face * 0.45, w_face * 0.45);
+        let y = Z_OFF + (k + 1) as f32 * MODULE_H - 2.9 * S;
+        let p = f.p(u, y, 24.0);
+        let dir = (-Vec3::Y + f.n * -rng.range(0.35, 0.7) + f.t * rng.range(-0.1, 0.1)).normalize();
+        let (mech, clin) = match rng.int(0, 9) {
+            0 => (Vec3::new(1.0, 0.9, 0.8), Vec3::new(0.9, 0.95, 1.0)),
+            1 => (Vec3::new(1.0, 0.25, 0.08), Vec3::new(0.6, 0.85, 1.0)),
+            _ => (Vec3::new(1.0, 0.62, 0.3), Vec3::new(0.85, 0.93, 1.0)),
+        };
+        let power = rng.range(0.5, 1.6);
+        let reach = rng.range(350.0, 800.0);
+        commands.spawn((
+            ShaftPart,
+            far(),
+            PitLight { mech, clin },
+            SpotLight {
+                color: Color::linear_rgb(mech.x, mech.y, mech.z),
+                intensity: 2.0e9 * power,
+                range: reach,
+                radius: 2.0,
+                inner_angle: 0.15,
+                outer_angle: 0.6,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_translation(p).looking_to(dir, f.n),
+        ));
+        // halo and beam colours come from their materials (mood + alarm); vertex colour only
+        // carries the strength, and a hint of red for the red lamps
+        let tint = if mech.y < 0.3 { [1.0, 0.35, 0.25] } else { [1.0, 1.0, 1.0] };
+        billboard(&mut halos, p, rng.range(10.0, 22.0) * power.sqrt(), [tint[0], tint[1], tint[2], power.min(1.0)]);
+        let len = reach * rng.range(0.5, 0.8);
+        beams.cone(p, dir, len, 1.5, len * 0.3f32.tan(), 16, [tint[0], tint[1], tint[2], 0.08 * power], [tint[0], tint[1], tint[2], 0.0]);
+    }
+    for (mb, mat) in [(halos, &mats.halo), (beams, &mats.beam)] {
+        commands.spawn((ShaftPart, far(), Mesh3d(meshes.add(mb.build())), MeshMaterial3d(mat.clone())));
     }
 }
 
