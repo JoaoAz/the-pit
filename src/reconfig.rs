@@ -1,9 +1,9 @@
 //! Reconfiguration of the shaft between the two states.
 //!
-//! Mechanical: the wall's giant panels stand open like doors, turned edge-on towards
-//! the shaft centre, so from the platform they are thin slivers and the industrial
-//! machinery behind them is exposed. Clinical: they swing shut into a smooth white
-//! skin with lines of light. The closing travels as a wave from both
+//! Mechanical: the wall's giant panels are slid aside and stacked at the corners of
+//! each facet, where they read as massive pillars, and the industrial machinery is
+//! exposed. Clinical: they slide out like sliding gates, each one along the wall and
+//! then back into the skin plane, closing a smooth white skin with lines of light. The closing travels as a wave from both
 //! far ends of the shaft towards the platform, so the last panels to shut are the
 //! nearest ones. Opening runs the other way (nearest first).
 //!
@@ -23,9 +23,9 @@ const ALARM_S: f32 = 8.0;
 const MOTION_S: f32 = 50.0;
 /// Fraction of the motion timeline one shutter takes to swing.
 const SWING: f32 = 0.22;
-/// Open angle range of the shutters in the mechanical state (each one differs a little).
-const OPEN_MIN: f32 = 78.0 * PI / 180.0;
-const OPEN_MAX: f32 = 100.0 * PI / 180.0;
+/// Thickness of one panel and spacing of the layers in a corner stack.
+const PANEL_T: f32 = 0.6 * S;
+const LAYER: f32 = 0.75 * S;
 /// Distance of the skin from the wall face: clears the corner columns and ring beams.
 const SKIN_W: f32 = 6.6 * S;
 /// Modules each way that carry shutters (beyond this the fog hides the wall anyway).
@@ -68,10 +68,13 @@ impl Reconfig {
 
 #[derive(Component)]
 pub struct Shutter {
-    basis: Quat,
     delay: f32,
-    /// signed open angle around the hinge (sign depends on the hinge side)
-    open: f32,
+    /// position in the corner stack (mechanical)
+    open: Vec3,
+    /// position in the skin (clinical)
+    closed: Vec3,
+    /// outward offset of its stack layer
+    out: Vec3,
 }
 
 pub struct ReconfigPlugin;
@@ -136,35 +139,52 @@ fn swing_shutters(rc: Res<Reconfig>, mut q: Query<(&Shutter, &mut Transform)>, m
     }
     *last = Some(rc.progress);
     for (s, mut t) in &mut q {
-        let closed = smooth(((rc.progress - s.delay) / SWING).clamp(0.0, 1.0));
-        t.rotation = s.basis * Quat::from_rotation_y((1.0 - closed) * s.open);
+        let c = ((rc.progress - s.delay) / SWING).clamp(0.0, 1.0);
+        // slide along the wall in its stack layer first, then sink back into the skin
+        let slide = smooth((c / 0.75).min(1.0));
+        let sink = smooth(((c - 0.75) / 0.25).max(0.0));
+        t.translation = s.open.lerp(s.closed, slide) + s.out * (1.0 - sink);
     }
 }
 
-/// Builds the shutter meshes (panel and its light line) in hinge space: the hinge is
-/// the panel's top corner on the left (`right = false`, panel along +X) or on the
-/// right (panel along -X); the panel hangs down along -Y and faces +Z (the centre).
-fn shutter_meshes(w: f32, h: f32, right: bool) -> (Mesh, Mesh) {
+/// Builds a panel (and its light line) centred on its own origin: a thick slab facing
+/// +Z (the shaft centre) with a raised frame, ribs and a recessed seam, so it still
+/// reads as a solid object when it stands in a corner stack.
+fn shutter_meshes(w: f32, h: f32) -> (Mesh, Mesh) {
     let mut p = MeshBuilder::default();
     let mut l = MeshBuilder::default();
     let ax = [Vec3::X, Vec3::Y, Vec3::Z];
-    let th = 0.4 * S;
     let gap = 0.15 * S;
-    let sx = if right { -1.0 } else { 1.0 };
-    p.cuboid(Vec3::new(sx * w / 2.0, -h / 2.0, th / 2.0), ax, [w / 2.0 - gap, h / 2.0 - gap, th / 2.0], [0.95, 0.95, 0.95, 1.0]);
-    // a recessed seam in the middle and a vertical strip of light near the free edge
-    p.cuboid(Vec3::new(sx * w / 2.0, -h * 0.5, th + 0.01), ax, [w / 2.0 - gap, 0.04 * S, 0.02], [0.4, 0.4, 0.4, 1.0]);
-    l.cuboid(Vec3::new(sx * (w - 1.2 * S), -h / 2.0, th + 0.03), ax, [0.12 * S, h / 2.0 - 1.5 * S, 0.03], [1.0, 1.0, 1.0, 1.0]);
+    let (hw, hh) = (w / 2.0 - gap, h / 2.0 - gap);
+    let g = [0.95, 0.95, 0.95, 1.0];
+    let d = [0.6, 0.6, 0.6, 1.0];
+    p.cuboid(Vec3::ZERO, ax, [hw, hh, PANEL_T / 2.0], g);
+    // frame
+    let f = 0.5 * S;
+    for y in [-hh + f / 2.0, hh - f / 2.0] {
+        p.cuboid(Vec3::new(0.0, y, PANEL_T / 2.0 + 0.2), ax, [hw, f / 2.0, 0.2], d);
+    }
+    for x in [-hw + f / 2.0, hw - f / 2.0] {
+        p.cuboid(Vec3::new(x, 0.0, PANEL_T / 2.0 + 0.2), ax, [f / 2.0, hh, 0.2], d);
+    }
+    // horizontal ribs and a recessed seam
+    let ribs = (h / (12.0 * S)).max(1.0) as i32;
+    for k in 1..=ribs {
+        let y = -hh + 2.0 * hh * k as f32 / (ribs + 1) as f32;
+        p.cuboid(Vec3::new(0.0, y, PANEL_T / 2.0 + 0.1), ax, [hw - f, 0.12 * S, 0.1], d);
+    }
+    l.cuboid(Vec3::new(hw - 1.6 * S, 0.0, PANEL_T / 2.0 + 0.45), ax, [0.12 * S, hh - 2.0 * S, 0.03], [1.0, 1.0, 1.0, 1.0]);
     (p.build(), l.build())
 }
 
-/// Spawns the shutters for a shaft of the given apothem. Column widths, the number of
-/// rows per module, the open angle and which panels carry a light line all vary.
+/// Spawns the panels for a shaft of the given apothem. Column widths, the number of
+/// rows per module and which panels carry a light line all vary. In the open
+/// (mechanical) state each facet's panels stand stacked in layers at its two corners.
 pub fn spawn_shutters(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats, apothem: f32, z_off: f32) {
     let w_face = 2.0 * apothem * (PI / SIDES as f32).tan();
     let ymax = SHUTTER_MODULES as f32 * MODULE_H;
     let mut rng = Rng::new(42);
-    let mut cache: HashMap<(u32, u32, bool), (Handle<Mesh>, Handle<Mesh>)> = HashMap::new();
+    let mut cache: HashMap<(u32, u32), (Handle<Mesh>, Handle<Mesh>)> = HashMap::new();
     for k in -SHUTTER_MODULES..SHUTTER_MODULES {
         for i in 0..SIDES {
             let th = TAU * i as f32 / SIDES as f32;
@@ -185,33 +205,38 @@ pub fn spawn_shutters(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: 
                 cols.push((x, w));
                 x += w;
             }
+            let ncols = cols.len();
             for r in 0..rows {
-                let top = z_off + k as f32 * MODULE_H + (r + 1) as f32 * ph;
+                let centre_y = z_off + k as f32 * MODULE_H + (r as f32 + 0.5) * ph;
                 // far panels shut first, the ones level with the platform last
-                let dist = ((top - ph / 2.0).abs() / ymax).min(1.0);
-                for &(x0, pw) in &cols {
-                    let right = rng.chance(0.5);
+                let dist = (centre_y.abs() / ymax).min(1.0);
+                for (ci, &(x0, pw)) in cols.iter().enumerate() {
                     let (pm, lm) = cache
-                        .entry((pw as u32, rows, right))
+                        .entry((pw as u32, rows))
                         .or_insert_with(|| {
-                            let (a, b) = shutter_meshes(pw, ph, right);
+                            let (a, b) = shutter_meshes(pw, ph);
                             (meshes.add(a), meshes.add(b))
                         })
                         .clone();
-                    // hinge on the left or right edge of the column
-                    let u = -w_face / 2.0 + x0 + if right { pw } else { 0.0 };
+                    let u = -w_face / 2.0 + x0 + pw / 2.0;
+                    // left half stacks at the left corner, right half at the right one;
+                    // the panel nearest the corner stands at the back of the stack
+                    let left = ci < ncols / 2;
+                    let layer = if left { ci } else { ncols - 1 - ci } as f32;
+                    let u_open = if left { -w_face / 2.0 + pw / 2.0 + 2.0 * S } else { w_face / 2.0 - pw / 2.0 - 2.0 * S };
+                    let base = d * apothem + Vec3::Y * centre_y + n * (SKIN_W + PANEL_T / 2.0);
+                    let closed = base + t * u;
+                    let open = base + t * u_open;
+                    let out = n * (layer + 1.0) * LAYER;
                     let delay = ((1.0 - dist) * (1.0 - SWING - 0.1) + rng.range(0.0, 0.1)).clamp(0.0, 1.0 - SWING);
-                    // rotating about Y by -90 deg turns +X into +Z (towards the centre)
-                    let open = rng.range(OPEN_MIN, OPEN_MAX) * if right { 1.0 } else { -1.0 };
-                    let pivot = d * apothem + t * u + Vec3::Y * top + n * SKIN_W;
                     let skin = mats.skins[rng.int(0, mats.skins.len() as u32 - 1) as usize].clone();
                     let mut e = commands.spawn((
                         ShaftPart,
                         far(),
-                        Shutter { basis, delay, open },
+                        Shutter { delay, open, closed, out },
                         Mesh3d(pm),
                         MeshMaterial3d(skin),
-                        Transform::from_translation(pivot).with_rotation(basis * Quat::from_rotation_y(open)),
+                        Transform::from_translation(open + out).with_rotation(basis),
                     ));
                     if rng.chance(0.45) {
                         e.with_children(|ch| {

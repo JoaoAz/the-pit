@@ -6,7 +6,8 @@
 //! the six faces of a cube (one face per frame, round robin). The headset only draws
 //! the platform, the hands and six textured quads, so its cost no longer depends on
 //! how much detail the shaft has. Moving parts (shutters, ring, smoke, alarm lights)
-//! still move: at 90 Hz every face is refreshed 15 times per second.
+//! still move: during a reconfiguration every face is refreshed 15 times per second
+//! at 90 Hz, at rest 5 times.
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Hdr, RenderTarget};
@@ -130,12 +131,31 @@ fn setup(
     commands.insert_resource(Panorama { faces, next: 0 });
 }
 
-fn next_face(mut pano: ResMut<Panorama>, mut q: Query<(&mut Transform, &mut RenderTarget), With<PanoCam>>) {
-    let i = pano.next;
-    pano.next = (i + 1) % 6;
-    let (d, up) = FACES[i];
-    for (mut t, mut target) in &mut q {
+/// Round robin over the six faces. While the space is reconfiguring every frame
+/// renders a face; at rest only every third frame does (smoke and the ring still drift,
+/// each face is refreshed 5 times a second at 90 Hz), which frees most of the GPU.
+fn next_face(
+    mut pano: ResMut<Panorama>,
+    rc: Res<crate::reconfig::Reconfig>,
+    mut frame: Local<u32>,
+    mut q: Query<(&mut Transform, &mut RenderTarget, &mut Camera), With<PanoCam>>,
+) {
+    *frame += 1;
+    let busy = rc.phase != crate::reconfig::Phase::Idle || rc.alarm > 0.0 || rc.frozen || *frame < 120;
+    let render = busy || *frame % 3 == 0;
+    for (mut t, mut target, mut cam) in &mut q {
+        if cam.is_active != render {
+            cam.is_active = render;
+        }
+        if !render {
+            continue;
+        }
+        let i = pano.next;
+        let (d, up) = FACES[i];
         *t = Transform::from_translation(EYE).looking_to(d, up);
         *target = RenderTarget::Image(pano.faces[i].clone().into());
+    }
+    if render {
+        pano.next = (pano.next + 1) % 6;
     }
 }

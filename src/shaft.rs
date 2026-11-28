@@ -81,6 +81,10 @@ pub struct Mats {
     pub halo: Handle<StandardMaterial>,
     pub beam: Handle<StandardMaterial>,
     pub smoke: Handle<StandardMaterial>,
+    pub grate: Handle<StandardMaterial>,
+    /// the far glow up the shaft (and a dim red one below)
+    pub core: Handle<StandardMaterial>,
+    pub core_low: Handle<StandardMaterial>,
 }
 
 const GREY: [f32; 4] = [0.75, 0.75, 0.73, 1.0];
@@ -392,7 +396,7 @@ fn plume(mb: &mut MeshBuilder, rng: &mut Rng, base: Vec3, height: f32, w0: f32, 
     }
 }
 
-fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: bool) -> Structures {
+fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: f32) -> Structures {
     let h = MODULE_H;
     let w_face = face_width(apothem);
     let mut rng = Rng::new(seed);
@@ -496,8 +500,8 @@ fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: bool) -> Structures
                 fu += rng.range(10.0, 25.0);
             }
         }
-        // smoking vent
-        if smoke && rng.chance(0.2) {
+        // smoking vent (more of them near the platform level)
+        if smoke > 0.0 && rng.chance(smoke) {
             let (vw, vh) = (rng.range(12.0, 30.0), rng.range(6.0, 14.0));
             let u = rng.range(-w_face / 2.0 + vw, w_face / 2.0 - vw);
             let v = y0 + rng.range(10.0, h - vh - 10.0);
@@ -509,11 +513,69 @@ fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: bool) -> Structures
             b.cuboid(f.p(u, v, 2.0), ax, [vw / 2.0 + 1.5, vh / 2.0 + 1.5, 2.0], DARK);
             billboard(&mut st.halo, f.p(u, v, 8.0), vw * 1.2, [1.0, 0.7, 0.5, 0.6]);
             let base = f.p(u, v + vh / 2.0, 7.0);
-            let (ph, pw) = (rng.range(60.0, 180.0), vw * rng.range(1.5, 3.0));
-            plume(&mut st.smoke, &mut rng, base, ph, vw * 0.5, pw);
+            let (ph, pw) = (rng.range(140.0, 340.0), vw * rng.range(2.5, 4.5));
+            plume(&mut st.smoke, &mut rng, base, ph, vw * 0.7, pw);
+            if rng.chance(0.5) {
+                // a second, thinner puff for depth
+                let (ph2, pw2) = (ph * 0.6, pw * 0.6);
+                plume(&mut st.smoke, &mut rng, base + f.n * 3.0, ph2, vw * 0.4, pw2);
+            }
         }
     }
     st
+}
+
+/// Vertical lattice towers along the wall, spanning a random number of modules near
+/// the platform, with dashed light strips running up their edges (white and amber).
+fn build_towers(apothem: f32) -> (MeshBuilder, MeshBuilder, MeshBuilder) {
+    let w_face = face_width(apothem);
+    let (mut body, mut lamp, mut amber) = (MeshBuilder::default(), MeshBuilder::default(), MeshBuilder::default());
+    let mut rng = Rng::new(909);
+    for i in 0..SIDES {
+        let f = Facet::new(i, apothem);
+        let ax = f.ax();
+        for _ in 0..rng.int(1, 3) {
+            let (tw, td) = (rng.range(6.0, 12.0), rng.range(5.0, 8.0));
+            let u = rng.range(-w_face / 2.0 + 20.0, w_face / 2.0 - 20.0);
+            let w0 = rng.range(6.0, MAX_W - td - 1.0);
+            let span = rng.range(3.0, 16.0) * MODULE_H;
+            let y0 = rng.range(-14.0 * MODULE_H, 14.0 * MODULE_H - span);
+            let bay = rng.range(8.0, 14.0);
+            let c = tone(&mut rng);
+            let r = rng.range(0.35, 0.6);
+            let corners = [(-tw / 2.0, w0), (tw / 2.0, w0), (-tw / 2.0, w0 + td), (tw / 2.0, w0 + td)];
+            for (du, w) in corners {
+                body.cylinder(f.p(u + du, y0, w), f.p(u + du, y0 + span, w), r * 1.6, 6, c);
+            }
+            let mut y = y0;
+            let mut flip = false;
+            while y + bay <= y0 + span {
+                // zigzag on the face towards the centre and on one side, rungs on all four
+                let (a, b) = if flip { (-tw / 2.0, tw / 2.0) } else { (tw / 2.0, -tw / 2.0) };
+                body.cylinder(f.p(u + a, y, w0 + td), f.p(u + b, y + bay, w0 + td), r, 4, c);
+                let side = if flip { w0 } else { w0 + td };
+                body.cylinder(f.p(u - tw / 2.0, y, side), f.p(u - tw / 2.0, y + bay, w0 + w0 + td - side), r, 4, c);
+                body.cylinder(f.p(u - tw / 2.0, y, w0 + td), f.p(u + tw / 2.0, y, w0 + td), r, 4, c);
+                body.cylinder(f.p(u - tw / 2.0, y, w0), f.p(u - tw / 2.0, y, w0 + td), r, 4, c);
+                flip = !flip;
+                y += bay;
+            }
+            // dashed light strips on the two front edges
+            let dash = rng.range(3.0, 6.0);
+            let warm = rng.chance(0.35);
+            for du in [-tw / 2.0, tw / 2.0] {
+                let mut y = y0 + dash;
+                while y < y0 + span - dash {
+                    if rng.chance(0.75) {
+                        let target = if warm { &mut amber } else { &mut lamp };
+                        target.cuboid(f.p(u + du, y, w0 + td + r * 1.7), ax, [0.18, dash * 0.32, 0.06], WHITE);
+                    }
+                    y += dash;
+                }
+            }
+        }
+    }
+    (body, lamp, amber)
 }
 
 /// Vertical risers that run continuously through a random number of modules.
@@ -545,11 +607,41 @@ fn build_risers(apothem: f32) -> MeshBuilder {
     mb
 }
 
-/// The platform: a plain floating disc, nothing on it.
+pub const GRATE_R: f32 = PLATFORM_R - 0.12;
+
+/// The platform frame: a rim ring, radial beams and a hub under the grating (the
+/// grating itself is a separate alpha-tested disc). No railings, nothing on top.
 fn build_platform() -> Mesh {
     let mut s = MeshBuilder::default();
-    s.cylinder(Vec3::new(0.0, -0.3, 0.0), Vec3::ZERO, PLATFORM_R, 64, GREY);
-    s.cylinder(Vec3::new(0.0, -0.55, 0.0), Vec3::new(0.0, -0.3, 0.0), PLATFORM_R - 0.25, 64, DARK);
+    let segs = 64;
+    for k in 0..segs {
+        let a0 = TAU * k as f32 / segs as f32;
+        let a1 = TAU * (k + 1) as f32 / segs as f32;
+        let am = (a0 + a1) / 2.0;
+        let d = Vec3::new(am.cos(), 0.0, am.sin());
+        let t = Vec3::new(-am.sin(), 0.0, am.cos());
+        let len = PLATFORM_R * (a1 - a0) / 2.0 + 0.01;
+        // rim: a box section flush with the grating, with a lip below
+        s.cuboid(d * (PLATFORM_R - 0.06) + Vec3::Y * -0.11, [t, Vec3::Y, d], [len, 0.11, 0.06], GREY);
+        s.cuboid(d * (PLATFORM_R - 0.25) + Vec3::Y * -0.27, [t, Vec3::Y, d], [len * 0.9, 0.05, 0.2], DARK);
+        // inner ring beam
+        let ri = 1.15;
+        s.cuboid(d * ri + Vec3::Y * -0.09, [t, Vec3::Y, d], [ri * (a1 - a0) / 2.0 + 0.01, 0.07, 0.025], DARK);
+    }
+    // radial I-beams under the grating
+    for k in 0..12 {
+        let a = TAU * k as f32 / 12.0;
+        let d = Vec3::new(a.cos(), 0.0, a.sin());
+        let t = Vec3::new(-a.sin(), 0.0, a.cos());
+        let c = d * (PLATFORM_R / 2.0);
+        let ax = [d, Vec3::Y, t];
+        s.cuboid(c + Vec3::Y * -0.13, ax, [PLATFORM_R / 2.0 - 0.06, 0.11, 0.008], DARK);
+        s.cuboid(c + Vec3::Y * -0.24, ax, [PLATFORM_R / 2.0 - 0.06, 0.008, 0.05], DARK);
+        s.cuboid(c + Vec3::Y * -0.015, ax, [PLATFORM_R / 2.0 - 0.06, 0.008, 0.04], DARK);
+    }
+    // hub and a short keel below, so the disc has mass
+    s.cylinder(Vec3::new(0.0, -0.32, 0.0), Vec3::new(0.0, -0.02, 0.0), 0.3, 24, DARK);
+    s.cylinder(Vec3::new(0.0, -0.75, 0.0), Vec3::new(0.0, -0.32, 0.0), 0.18, 16, DARK);
     s.build()
 }
 
@@ -639,7 +731,8 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             part(commands, &m[6], &mats.lamp, t, Some(range(0.0, LOD_FINE)));
         }
         if k.abs() <= STRUCT_MODULES {
-            let st = build_structures(apothem, y, 1000 + (k + 500) as u64, k.abs() <= SMOKE_MODULES);
+            let smoke = if k.abs() <= 3 { 0.35 } else if k.abs() <= SMOKE_MODULES { 0.12 } else { 0.0 };
+            let st = build_structures(apothem, y, 1000 + (k + 500) as u64, smoke);
             for (mb, mat) in [(st.body, &mats.wall), (st.lamp, &mats.lamp), (st.lamp_alt, &mats.lamp_alt), (st.smoke, &mats.smoke), (st.halo, &mats.halo)] {
                 if !mb.is_empty() {
                     part(commands, &meshes.add(mb.build()), mat, Transform::IDENTITY, None);
@@ -648,9 +741,25 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
         }
     }
     part(commands, &meshes.add(build_risers(apothem).build()), &mats.wall, Transform::IDENTITY, None);
+    let (tb, tl, ta) = build_towers(apothem);
+    for (mb, mat) in [(tb, &mats.wall), (tl, &mats.lamp), (ta, &mats.lamp_alt)] {
+        part(commands, &meshes.add(mb.build()), mat, Transform::IDENTITY, None);
+    }
+    // a glow far up the shaft (cold) and a faint one far below (red): light, not an end
+    for (y, size, mat) in [(9000.0, apothem * 3.0, &mats.core), (-9000.0, apothem * 2.0, &mats.core_low)] {
+        let mut mb = MeshBuilder::default();
+        billboard(&mut mb, Vec3::Y * y, size, WHITE);
+        part(commands, &meshes.add(mb.build()), mat, Transform::IDENTITY, None);
+    }
 
     // the platform is the only thing drawn live in the headset (default layer)
     commands.spawn((ShaftPart, Mesh3d(meshes.add(build_platform())), MeshMaterial3d(mats.platform.clone())));
+    commands.spawn((
+        ShaftPart,
+        Mesh3d(meshes.add(Circle::new(GRATE_R))),
+        MeshMaterial3d(mats.grate.clone()),
+        Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+    ));
 
     crate::reconfig::spawn_shutters(commands, meshes, mats, apothem, Z_OFF);
 
@@ -683,7 +792,7 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
     let mut rng = Rng::new(4242);
     let mut halos = MeshBuilder::default();
     let mut beams = MeshBuilder::default();
-    let count = 72;
+    let count = 30;
     for _ in 0..count {
         let f = Facet::new(rng.int(0, SIDES as u32 - 1) as usize, apothem);
         // denser near the platform, thinning out with height
@@ -698,14 +807,14 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
             _ => (Vec3::new(1.0, 0.62, 0.3), Vec3::new(0.85, 0.93, 1.0)),
         };
         let power = rng.range(0.5, 1.6);
-        let reach = rng.range(350.0, 800.0);
+        let reach = rng.range(250.0, 500.0);
         commands.spawn((
             ShaftPart,
             far(),
             PitLight { mech, clin },
             SpotLight {
                 color: Color::linear_rgb(mech.x, mech.y, mech.z),
-                intensity: 2.0e9 * power,
+                intensity: 1.2e9 * power,
                 range: reach,
                 radius: 2.0,
                 inner_angle: 0.15,

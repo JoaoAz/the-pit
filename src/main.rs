@@ -198,7 +198,7 @@ fn setup(
             })
             .collect(),
         skin_line: lamp(&mut materials, Color::srgb(0.5, 0.3, 0.12)),
-        halo: additive(&mut materials, Some(glow)),
+        halo: additive(&mut materials, Some(glow.clone())),
         beam: additive(&mut materials, None),
         smoke: materials.add(StandardMaterial {
             base_color: Color::srgba(0.3, 0.27, 0.24, 0.6),
@@ -207,6 +207,35 @@ fn setup(
             alpha_mode: AlphaMode::Blend,
             cull_mode: None,
             double_sided: true,
+            ..default()
+        }),
+        grate: materials.add(StandardMaterial {
+            base_color_texture: Some(images.add(texture::grate_texture())),
+            alpha_mode: AlphaMode::AlphaToCoverage,
+            // Circle UVs span the diameter; one tile is 0.3 m
+            uv_transform: Affine2::from_scale(Vec2::splat(2.0 * shaft::GRATE_R / 0.3)),
+            perceptual_roughness: 0.6,
+            metallic: 0.6,
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        }),
+        core: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0.45, 0.55, 0.75),
+            base_color_texture: Some(glow.clone()),
+            unlit: true,
+            alpha_mode: AlphaMode::Add,
+            fog_enabled: false,
+            cull_mode: None,
+            ..default()
+        }),
+        core_low: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0.5, 0.06, 0.03),
+            base_color_texture: Some(glow.clone()),
+            unlit: true,
+            alpha_mode: AlphaMode::Add,
+            fog_enabled: false,
+            cull_mode: None,
             ..default()
         }),
     };
@@ -238,8 +267,8 @@ fn setup(
 }
 
 fn fog_color(mood: f32) -> Color {
-    let mech = Vec3::new(0.085, 0.064, 0.045);
-    let clin = Vec3::new(0.30, 0.34, 0.37);
+    let mech = Vec3::new(0.03, 0.036, 0.046);
+    let clin = Vec3::new(0.2, 0.23, 0.26);
     let c = mech.lerp(clin, mood);
     Color::srgb(c.x, c.y, c.z)
 }
@@ -318,7 +347,7 @@ fn apply_mood(
         Color::srgb(c.x, c.y, c.z)
     };
     if let Some(mut m) = materials.get_mut(&mats.m.wall) {
-        m.base_color = mix(Vec3::new(0.3, 0.28, 0.24), Vec3::new(0.8, 0.81, 0.82));
+        m.base_color = mix(Vec3::new(0.27, 0.28, 0.3), Vec3::new(0.8, 0.81, 0.82));
         // roughness and metal come from the texture; the clinical wall is a bit smoother
         m.perceptual_roughness = 1.0 - 0.2 * t;
         m.metallic = 1.0 - 0.7 * t;
@@ -332,11 +361,16 @@ fn apply_mood(
         let v = Vec3::new(l.red, l.green, l.blue).lerp(red, pulse);
         Color::srgb(v.x, v.y, v.z)
     };
+    // light strips are HDR so they pop against the dark (white and amber, as in the references)
+    let hdr = |c: Color, k: f32| {
+        let l = c.to_linear();
+        Color::linear_rgb(l.red * k, l.green * k, l.blue * k)
+    };
     if let Some(mut m) = materials.get_mut(&mats.m.lamp) {
-        m.base_color = alarm(mix(Vec3::new(1.0, 0.75, 0.45), Vec3::new(0.85, 0.95, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(0.95, 0.9, 0.82), Vec3::new(0.85, 0.95, 1.0))), 4.0);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.lamp_alt) {
-        m.base_color = alarm(mix(Vec3::new(1.0, 0.45, 0.15), Vec3::new(0.55, 0.85, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(1.0, 0.5, 0.12), Vec3::new(0.55, 0.85, 1.0))), 4.0);
     }
     for (h, (mc, cc, r)) in mats.m.skins.iter().zip(SKINS) {
         if let Some(mut m) = materials.get_mut(h) {
@@ -353,23 +387,24 @@ fn apply_mood(
         m.base_color = glow(0.6).into();
     }
     if let Some(mut m) = materials.get_mut(&mats.m.smoke) {
-        let c = mix(Vec3::new(0.3, 0.26, 0.22), Vec3::new(0.75, 0.8, 0.85)).to_srgba();
-        m.base_color = Color::srgba(c.red, c.green, c.blue, 0.55 - 0.15 * t);
+        // smoke lit by the vents in the mechanical state, white steam in the clinical one
+        let c = mix(Vec3::new(0.55, 0.42, 0.3), Vec3::new(0.85, 0.9, 0.95)).to_srgba();
+        m.base_color = Color::srgba(c.red, c.green, c.blue, 0.8 - 0.15 * t);
     }
     for (mut l, p) in &mut lights {
         let c = alarm(mix(p.mech, p.clin)).to_linear();
         l.color = Color::LinearRgba(c);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.skin_line) {
-        m.base_color = alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0)));
+        m.base_color = hdr(alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0))), 3.0);
     }
     for mut f in &mut fogs {
         *f = fog(t, SIZES[size.0].0);
     }
     // the empty space beyond the last module is the fog colour: no visible end
     clear.0 = fog_color(t);
-    ambient.color = mix(Vec3::new(1.0, 0.8, 0.6), Vec3::new(0.9, 0.95, 1.0));
-    ambient.brightness = 130.0 + (300.0 - 130.0) * t;
+    ambient.color = mix(Vec3::new(0.7, 0.8, 1.0), Vec3::new(0.9, 0.95, 1.0));
+    ambient.brightness = 45.0 + (150.0 - 45.0) * t;
 }
 
 /// Smoke drifts upwards (the texture scrolls; the plume shape is in the vertex alpha).

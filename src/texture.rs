@@ -401,3 +401,23 @@ fn clamp(img: &mut Image) {
         d.address_mode_v = ImageAddressMode::ClampToEdge;
     }
 }
+
+/// Steel floor grating: bearing bars every 3 cm one way, cross bars every 10 cm,
+/// alpha = bar (drawn with alpha to coverage, so the abyss shows through the gaps).
+/// One tile covers 0.3 m x 0.3 m.
+pub fn grate_texture() -> Image {
+    let n = 256;
+    let mut px = vec![[0.0f32; 4]; n * n];
+    let bear = n / 10; // 3 cm
+    let cross = n / 3; // 10 cm
+    for y in 0..n {
+        for x in 0..n {
+            let bar = x % bear < 4;
+            let xb = y % cross < 6;
+            let g = if bar { 0.42 } else { 0.3 };
+            let a = if bar || xb { 1.0 } else { 0.0 };
+            px[y * n + x] = [g, g * 0.98, g * 0.95, a];
+        }
+    }
+    image_with_mips(n, &px, true)
+}
