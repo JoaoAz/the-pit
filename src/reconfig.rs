@@ -25,7 +25,7 @@ const MOTION_S: f32 = 50.0;
 const SWING: f32 = 0.22;
 /// Thickness of one panel and spacing of the layers in a corner stack.
 const PANEL_T: f32 = 0.6 * S;
-const LAYER: f32 = 0.75 * S;
+const LAYER: f32 = 1.2 * S;
 /// Distance of the skin from the wall face: clears the corner columns and ring beams.
 const SKIN_W: f32 = 6.6 * S;
 /// Modules each way that carry shutters (beyond this the fog hides the wall anyway).
@@ -152,28 +152,80 @@ fn swing_shutters(rc: Res<Reconfig>, mut q: Query<(&Shutter, &mut Transform)>, m
 /// reads as a solid object when it stands in a corner stack.
 fn shutter_meshes(w: f32, h: f32) -> (Mesh, Mesh) {
     let mut p = MeshBuilder::default();
-    let mut l = MeshBuilder::default();
+    let mut l = MeshBuilder::glowing();
     let ax = [Vec3::X, Vec3::Y, Vec3::Z];
     let gap = 0.15 * S;
     let (hw, hh) = (w / 2.0 - gap, h / 2.0 - gap);
     let g = [0.95, 0.95, 0.95, 1.0];
     let d = [0.6, 0.6, 0.6, 1.0];
     p.cuboid(Vec3::ZERO, ax, [hw, hh, PANEL_T / 2.0], g);
-    // frame
-    let f = 0.5 * S;
+    // deep frame: proud enough (about 1.5 m) to cast a visible edge from hundreds of metres
+    let f = 0.6 * S;
+    let fz = PANEL_T / 2.0 + 0.75;
     for y in [-hh + f / 2.0, hh - f / 2.0] {
-        p.cuboid(Vec3::new(0.0, y, PANEL_T / 2.0 + 0.2), ax, [hw, f / 2.0, 0.2], d);
+        p.cuboid(Vec3::new(0.0, y, fz), ax, [hw, f / 2.0, 0.75], d);
     }
     for x in [-hw + f / 2.0, hw - f / 2.0] {
-        p.cuboid(Vec3::new(x, 0.0, PANEL_T / 2.0 + 0.2), ax, [f / 2.0, hh, 0.2], d);
+        p.cuboid(Vec3::new(x, 0.0, fz), ax, [f / 2.0, hh, 0.75], d);
     }
-    // horizontal ribs and a recessed seam
-    let ribs = (h / (12.0 * S)).max(1.0) as i32;
-    for k in 1..=ribs {
-        let y = -hh + 2.0 * hh * k as f32 / (ribs + 1) as f32;
-        p.cuboid(Vec3::new(0.0, y, PANEL_T / 2.0 + 0.1), ax, [hw - f, 0.12 * S, 0.1], d);
+    // the field inside the frame is split into bays: recessed plates, ventilation
+    // grilles (deep slats), service hatches and rivet rows, chosen per panel size
+    let mut rng = Rng::new((w * 131.0 + h * 7.0) as u64);
+    let (ix0, ix1) = (-hw + f, hw - f);
+    let (iy0, iy1) = (-hh + f, hh - f);
+    let mut y = iy0;
+    let face = PANEL_T / 2.0;
+    while y < iy1 - 1.0 {
+        let bh = rng.range(6.0, 16.0).min(iy1 - y);
+        let (b0, b1) = (y + 0.3, y + bh - 0.3);
+        let cy = (b0 + b1) / 2.0;
+        let bw = (ix1 - ix0) / 2.0 - 0.3;
+        match rng.int(0, 3) {
+            0 => {
+                // grille: thick horizontal slats with dark gaps between them
+                let n = ((b1 - b0) / 0.9) as i32;
+                for k in 0..n {
+                    let sy = b0 + 0.45 + k as f32 * 0.9;
+                    p.cuboid(Vec3::new(0.0, sy, face + 0.35), ax, [bw - 0.4, 0.22, 0.35], d);
+                }
+                p.cuboid(Vec3::new(0.0, cy, face + 0.02), ax, [bw, (b1 - b0) / 2.0, 0.02], [0.25, 0.25, 0.25, 1.0]);
+            }
+            1 => {
+                // raised plate with chamfer-like double step and a rivet row
+                p.cuboid(Vec3::new(0.0, cy, face + 0.3), ax, [bw, (b1 - b0) / 2.0, 0.3], g);
+                p.cuboid(Vec3::new(0.0, cy, face + 0.75), ax, [bw - 0.8, (b1 - b0) / 2.0 - 0.8, 0.15], g);
+                let nr = (bw / 1.2) as i32;
+                for k in 0..nr {
+                    let rx = -bw + 0.6 + k as f32 * 2.0 * bw / nr as f32;
+                    for ry in [b0 + 0.35, b1 - 0.35] {
+                        p.cuboid(Vec3::new(rx, ry, face + 0.66), ax, [0.12, 0.12, 0.08], d);
+                    }
+                }
+            }
+            2 => {
+                // two hatches side by side with handles and hinges
+                for side in [-1.0f32, 1.0] {
+                    let hx = side * bw / 2.0;
+                    let hwid = bw / 2.0 - 0.6;
+                    p.cuboid(Vec3::new(hx, cy, face + 0.4), ax, [hwid, (b1 - b0) / 2.0 - 0.3, 0.4], g);
+                    p.cuboid(Vec3::new(hx + side * (hwid - 0.8), cy, face + 0.95), ax, [0.15, 0.9, 0.15], d);
+                    for hy in [b0 + 1.2, b1 - 1.2] {
+                        p.cuboid(Vec3::new(hx - side * hwid, hy, face + 0.6), ax, [0.25, 0.5, 0.25], d);
+                    }
+                }
+            }
+            _ => {
+                // recessed bay: dark back plate behind a thin lip
+                p.cuboid(Vec3::new(0.0, cy, face + 0.02), ax, [bw, (b1 - b0) / 2.0, 0.02], [0.3, 0.3, 0.3, 1.0]);
+                p.cuboid(Vec3::new(0.0, b1 - 0.2, face + 0.5), ax, [bw, 0.2, 0.5], d);
+                p.cuboid(Vec3::new(0.0, b0 + 0.2, face + 0.5), ax, [bw, 0.2, 0.5], d);
+                // a pipe crossing the bay
+                p.cylinder(Vec3::new(-bw, cy, face + 0.8), Vec3::new(bw, cy, face + 0.8), 0.35, 8, d);
+            }
+        }
+        y += bh;
     }
-    l.cuboid(Vec3::new(hw - 1.6 * S, 0.0, PANEL_T / 2.0 + 0.45), ax, [0.12 * S, hh - 2.0 * S, 0.03], [1.0, 1.0, 1.0, 1.0]);
+    l.cuboid(Vec3::new(hw - f / 2.0, 0.0, PANEL_T / 2.0 + 1.55), ax, [0.12 * S, hh - 2.0 * S, 0.03], [1.0, 1.0, 1.0, 1.0]);
     (p.build(), l.build())
 }
 
@@ -238,7 +290,7 @@ pub fn spawn_shutters(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: 
                         MeshMaterial3d(skin),
                         Transform::from_translation(open + out).with_rotation(basis),
                     ));
-                    if rng.chance(0.45) {
+                    if rng.chance(0.05) {
                         e.with_children(|ch| {
                             ch.spawn((far(), Mesh3d(lm), MeshMaterial3d(mats.skin_line.clone())));
                         });

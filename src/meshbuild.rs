@@ -14,6 +14,8 @@ pub struct MeshBuilder {
     idx: Vec<u32>,
     /// Offset added to the planar UVs of everything built next (breaks texture tiling).
     pub uv_off: [f32; 2],
+    /// Skip the fake occlusion (lamps, glowing parts).
+    pub no_ao: bool,
 }
 
 /// Planar projection axes for a face normal (u axis, v axis).
@@ -29,18 +31,42 @@ fn planar_uv(p: Vec3, n: Vec3, off: [f32; 2]) -> [f32; 2] {
     [p.dot(tu) / crate::texture::TILE_M + off[0], -p.dot(tv) / crate::texture::TILE_M + off[1]]
 }
 
+/// Fake ambient occlusion: faces looking down are in shadow, and every side face gets
+/// darker towards its bottom edge, as if the parts below it blocked the light.
+/// It is what gives the hard-edged boxes their volume in the dark.
+fn ao_side(y: f32, ymin: f32, ymax: f32, n: Vec3) -> f32 {
+    let face = 0.62 + 0.38 * n.y.clamp(-1.0, 1.0);
+    let h = if ymax - ymin > 1e-3 { ((y - ymin) / (ymax - ymin)).clamp(0.0, 1.0) } else { 1.0 };
+    let grad = if n.y.abs() > 0.7 { 1.0 } else { 0.4 + 0.6 * h.powf(0.7) };
+    face * grad
+}
+
+fn shade(c: [f32; 4], k: f32) -> [f32; 4] {
+    [c[0] * k, c[1] * k, c[2] * k, c[3]]
+}
+
 fn planar_tangent(n: Vec3) -> [f32; 4] {
     let (tu, _) = planar_axes(n);
     [tu.x, tu.y, tu.z, 1.0]
 }
 
 impl MeshBuilder {
+    /// Builder for emissive parts: no fake occlusion.
+    pub fn glowing() -> Self {
+        Self { no_ao: true, ..Default::default() }
+    }
+
     fn quad(&mut self, p: [Vec3; 4], n: Vec3, c: [f32; 4]) {
+        self.quad_ao(p, n, c, [1.0; 4]);
+    }
+
+    /// Quad whose vertex colours are darkened by a per-vertex occlusion factor.
+    fn quad_ao(&mut self, p: [Vec3; 4], n: Vec3, c: [f32; 4], ao: [f32; 4]) {
         let b = self.pos.len() as u32;
-        for v in p {
+        for (v, k) in p.into_iter().zip(ao) {
             self.pos.push(v.to_array());
             self.nrm.push(n.to_array());
-            self.col.push(c);
+            self.col.push(shade(c, k));
             self.uv.push(planar_uv(v, n, self.uv_off));
             self.tan.push(planar_tangent(n));
         }
@@ -111,7 +137,15 @@ impl MeshBuilder {
             let nn = n.normalize_or_zero();
             // ensure counter-clockwise winding seen from outside
             let (u, v) = if u.cross(v).dot(nn) > 0.0 { (u, v) } else { (v, u) };
-            self.quad([ctr - u - v, ctr + u - v, ctr + u + v, ctr - u + v], nn, col);
+            let p = [ctr - u - v, ctr + u - v, ctr + u + v, ctr - u + v];
+            if self.no_ao {
+                self.quad(p, nn, col);
+            } else {
+                let ymin = c.y - (a.y.abs() + b.y.abs() + d.y.abs());
+                let ymax = c.y + (a.y.abs() + b.y.abs() + d.y.abs());
+                let ao = p.map(|q| ao_side(q.y, ymin, ymax, nn));
+                self.quad_ao(p, nn, col, ao);
+            }
         }
     }
 
@@ -129,7 +163,8 @@ impl MeshBuilder {
             for (p, along) in [(p0, 0.0), (p1, len)] {
                 self.pos.push((p + dir * r).to_array());
                 self.nrm.push(dir.to_array());
-                self.col.push(col);
+                let k = if self.no_ao { 1.0 } else { ao_side(p.y, p0.y.min(p1.y), p0.y.max(p1.y), dir) };
+                self.col.push(shade(col, k));
                 self.uv.push([a * r / tm + self.uv_off[0], (p0.y + along) / tm + self.uv_off[1]]);
                 let tg = ax.cross(dir);
                 self.tan.push([tg.x, tg.y, tg.z, 1.0]);
@@ -143,6 +178,7 @@ impl MeshBuilder {
         // caps
         for (p, n) in [(p0, -ax), (p1, ax)] {
             let cb = self.pos.len() as u32;
+            let col = if self.no_ao { col } else { shade(col, 0.62 + 0.38 * n.y) };
             self.pos.push(p.to_array());
             self.nrm.push(n.to_array());
             self.col.push(col);

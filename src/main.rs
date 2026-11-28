@@ -138,10 +138,10 @@ fn additive(materials: &mut Assets<StandardMaterial>, tex: Option<Handle<Image>>
 
 /// Skin tints (mechanical colour, clinical colour, roughness) for the shutter variants.
 const SKINS: [([f32; 3], [f32; 3], f32); 4] = [
-    ([0.08, 0.075, 0.065], [0.86, 0.88, 0.9], 0.65),
-    ([0.065, 0.06, 0.055], [0.8, 0.82, 0.84], 0.75),
-    ([0.1, 0.09, 0.075], [0.9, 0.9, 0.88], 0.6),
-    ([0.055, 0.055, 0.05], [0.74, 0.77, 0.8], 0.8),
+    ([0.08, 0.075, 0.065], [0.42, 0.45, 0.48], 0.65),
+    ([0.065, 0.06, 0.055], [0.3, 0.33, 0.36], 0.75),
+    ([0.1, 0.09, 0.075], [0.5, 0.52, 0.53], 0.5),
+    ([0.055, 0.055, 0.05], [0.22, 0.25, 0.28], 0.8),
 ];
 
 fn setup(
@@ -157,6 +157,7 @@ fn setup(
     let skin_albedo = images.add(st.albedo);
     let skin_mr = images.add(st.metal_rough);
     let skin_normal = images.add(st.normal);
+    let skin_depth = images.add(st.depth);
     let glow = images.add(texture::glow_texture());
     let m = Mats {
         wall: materials.add(StandardMaterial {
@@ -166,6 +167,10 @@ fn setup(
             emissive: LinearRgba::rgb(2.0, 1.4, 1.0),
             metallic_roughness_texture: Some(images.add(wt.metal_rough)),
             normal_map_texture: Some(images.add(wt.normal)),
+            // relief: recesses up to ~0.5 m (UV units are 40 m tiles)
+            depth_map: Some(images.add(wt.depth)),
+            parallax_depth_scale: 0.012,
+            max_parallax_layer_count: 16.0,
             perceptual_roughness: 1.0,
             metallic: 1.0,
             reflectance: 0.3,
@@ -190,6 +195,9 @@ fn setup(
                     base_color_texture: Some(skin_albedo.clone()),
                     metallic_roughness_texture: Some(skin_mr.clone()),
                     normal_map_texture: Some(skin_normal.clone()),
+                    depth_map: Some(skin_depth.clone()),
+                    parallax_depth_scale: 0.004,
+                    max_parallax_layer_count: 8.0,
                     perceptual_roughness: *r,
                     metallic: 0.0,
                     reflectance: 0.35,
@@ -250,8 +258,9 @@ fn setup(
 }
 
 fn fog_color(mood: f32) -> Color {
-    let mech = Vec3::new(0.13, 0.09, 0.055);
-    let clin = Vec3::new(0.2, 0.23, 0.26);
+    // dark haze: distance sinks into darkness, light only exists where a lamp is
+    let mech = Vec3::new(0.05, 0.034, 0.02);
+    let clin = Vec3::new(0.045, 0.06, 0.075);
     let c = mech.lerp(clin, mood);
     Color::srgb(c.x, c.y, c.z)
 }
@@ -330,12 +339,13 @@ fn apply_mood(
         Color::srgb(c.x, c.y, c.z)
     };
     if let Some(mut m) = materials.get_mut(&mats.m.wall) {
-        m.base_color = mix(Vec3::new(0.35, 0.34, 0.33), Vec3::new(0.8, 0.81, 0.82));
+        m.base_color = mix(Vec3::new(0.35, 0.34, 0.33), Vec3::new(0.42, 0.45, 0.48));
         // roughness and metal come from the texture; the clinical wall is a bit smoother
         m.perceptual_roughness = 1.0 - 0.2 * t;
         m.metallic = 1.0 - 0.7 * t;
         // window lights: warm in the mechanical state, cool and softer when clinical
-        let e = Vec3::new(0.9, 0.75, 0.6).lerp(Vec3::new(0.8, 1.0, 1.3), t);
+        // dim: a few faint windows deep in the dark, not a field of bright dots
+        let e = Vec3::new(0.9, 0.75, 0.6).lerp(Vec3::new(0.8, 1.0, 1.3), t) * 0.3;
         m.emissive = LinearRgba::rgb(e.x, e.y, e.z);
     }
     let red = Vec3::new(1.0, 0.04, 0.02);
@@ -382,7 +392,7 @@ fn apply_mood(
         l.color = Color::LinearRgba(c);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.skin_line) {
-        m.base_color = hdr(alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0))), 3.0);
+        m.base_color = hdr(alarm(mix(Vec3::new(0.5, 0.3, 0.12), Vec3::new(0.8, 0.95, 1.0))), 1.6);
     }
     for mut f in &mut fogs {
         *f = fog(t, SIZES[size.0].0);
@@ -390,7 +400,8 @@ fn apply_mood(
     // the empty space beyond the last module is the fog colour: no visible end
     clear.0 = fog_color(t);
     ambient.color = mix(Vec3::new(1.0, 0.75, 0.5), Vec3::new(0.9, 0.95, 1.0));
-    ambient.brightness = 15.0 + (220.0 - 15.0) * t;
+    // almost no fill light: surfaces only exist where a lamp reaches them
+    ambient.brightness = 4.0 + (14.0 - 4.0) * t;
 }
 
 /// Smoke drifts upwards (the texture scrolls; the plume shape is in the vertex alpha).

@@ -23,6 +23,8 @@ pub struct TexSet {
     /// glTF convention: G = roughness, B = metallic
     pub metal_rough: Image,
     pub normal: Image,
+    /// Bevy convention: black = surface, white = deepest (for parallax relief).
+    pub depth: Image,
 }
 
 struct Canvas {
@@ -304,14 +306,63 @@ fn normal_map(c: &Canvas, strength: f32) -> Vec<[f32; 4]> {
     out
 }
 
+/// Baked cavity shadow: recesses and seams are darker than the faces around them
+/// (local height below its neighbourhood average), plus a little global height shading.
+fn bake_cavity(c: &mut Canvas, strength: f32) {
+    let n = c.n;
+    let r = (n / 128).max(2) as isize;
+    let h = c.height.clone();
+    // box blur, separable, wrapping
+    let blur = |src: &Vec<f32>, horiz: bool| {
+        let mut out = vec![0.0; n * n];
+        for y in 0..n {
+            for x in 0..n {
+                let mut acc = 0.0;
+                for k in -r..=r {
+                    let (xx, yy) = if horiz {
+                        (((x as isize + k).rem_euclid(n as isize)) as usize, y)
+                    } else {
+                        (x, ((y as isize + k).rem_euclid(n as isize)) as usize)
+                    };
+                    acc += src[yy * n + xx];
+                }
+                out[y * n + x] = acc / (2 * r + 1) as f32;
+            }
+        }
+        out
+    };
+    let avg = blur(&blur(&h, true), false);
+    let (lo, hi) = h.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    for i in 0..n * n {
+        let cav = ((h[i] - avg[i]) * 2.5).clamp(-1.0, 0.3);
+        let glob = if hi > lo { (h[i] - lo) / (hi - lo) } else { 1.0 };
+        let k = ((1.0 + cav * strength) * (0.7 + 0.3 * glob)).clamp(0.15, 1.1);
+        for ch in &mut c.albedo[i] {
+            *ch *= k;
+        }
+    }
+}
+
+fn depth_map(c: &Canvas) -> Vec<[f32; 4]> {
+    let (lo, hi) = c.height.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    let span = (hi - lo).max(1e-4);
+    c.height.iter().map(|h| {
+        let d = (hi - h) / span;
+        [d, d, d, 1.0]
+    }).collect()
+}
+
 fn finish(c: &Canvas, normal_strength: f32, with_emit: bool) -> TexSet {
+    let mut baked = Canvas { n: c.n, albedo: c.albedo.clone(), emit: vec![], height: c.height.clone(), rough: vec![], metal: vec![] };
+    bake_cavity(&mut baked, 0.8);
     let rgba = |v: &Vec<[f32; 3]>| v.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect::<Vec<_>>();
     let mr: Vec<[f32; 4]> = c.rough.iter().zip(&c.metal).map(|(r, m)| [1.0, *r, *m, 1.0]).collect();
     TexSet {
-        albedo: image_with_mips(c.n, &rgba(&c.albedo), true),
+        albedo: image_with_mips(c.n, &rgba(&baked.albedo), true),
         emissive: with_emit.then(|| image_with_mips(c.n, &rgba(&c.emit), true)),
         metal_rough: image_with_mips(c.n, &mr, false),
         normal: image_with_mips(c.n, &normal_map(c, normal_strength), false),
+        depth: image_with_mips(c.n, &depth_map(c), false),
     }
 }
 
@@ -389,8 +440,10 @@ pub fn smoke_texture() -> Image {
             // billows: large soft lobes with sharper wisps on top
             let f = fbm(u, v, 3, 6, 31);
             let lobes = (1.0 - (fbm(u, v, 2, 3, 77) * 2.0 - 1.0).abs()).powf(1.5);
-            let a = ((f * 0.6 + lobes * 0.6 - 0.45) * 2.6).clamp(0.0, 1.0);
-            let g = 0.55 + 0.45 * f;
+            // soft and dense: no see-through holes (they read as cheese, not steam)
+            let t = ((f * 0.6 + lobes * 0.6 - 0.2) / 0.8).clamp(0.0, 1.0);
+            let a = 0.35 + 0.65 * t * t * (3.0 - 2.0 * t);
+            let g = 0.7 + 0.3 * f;
             px[y * n + x] = [g, g, g, a];
         }
     }

@@ -50,7 +50,7 @@ const LOD_MID: f32 = 3500.0;
 
 /// Fog density in 1/m: real atmospheric perspective, independent of shaft size.
 pub fn fog_density(mood: f32) -> f32 {
-    0.0008 + (0.00035 - 0.0008) * mood
+    0.0008 + (0.0006 - 0.0008) * mood
 }
 
 #[derive(Component)]
@@ -180,12 +180,12 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
     let w_face = face_width(apothem);
     let per = w_face / 24.0 / s; // how many "concept-art facets" fit in this one
     let mut shell = MeshBuilder::default();
-    let mut shell_lamp = MeshBuilder::default();
+    let mut shell_lamp = MeshBuilder::glowing();
     let mut mid = MeshBuilder::default();
-    let mut mid_lamp = MeshBuilder::default();
-    let mut mid_lamp_alt = MeshBuilder::default();
+    let mut mid_lamp = MeshBuilder::glowing();
+    let mut mid_lamp_alt = MeshBuilder::glowing();
     let mut fine = MeshBuilder::default();
-    let mut fine_lamp = MeshBuilder::default();
+    let mut fine_lamp = MeshBuilder::glowing();
     let mut rng = Rng::new(100 + var * 7919);
 
     for i in 0..SIDES {
@@ -204,7 +204,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
         shell.cuboid(f.p(0.0, h - 1.3 * s, beam_d), ax, [w_face / 2.0 + 1.5 * s, 1.3 * s, beam_d], GREY);
         shell.cuboid(f.p(w_face / 2.0, h / 2.0, 2.6 * s), ax, [2.4 * s, h / 2.0, 2.6 * s], DARK);
         for (u0, u1) in partition(&mut rng, -w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s, 20.0, 120.0) {
-            if rng.chance(0.35) {
+            if rng.chance(0.1) {
                 shell_lamp.cuboid(f.p((u0 + u1) / 2.0, h - 2.65 * s, 2.0 * beam_d), ax, [(u1 - u0) / 2.0 - 2.0, 0.06 * s, 0.12 * s], [0.6, 0.6, 0.6, 1.0]);
             }
         }
@@ -236,7 +236,8 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
             hazard_band(&mut mid, &f, -w_face / 2.0, w_face / 2.0, h - 0.4 * s, 2.0 * beam_d + 0.05 * s, 0.4 * s, 0.8 * s);
         }
         let nl = (w_face / (2.4 * s)) as i32;
-        let lit = rng.range(0.15, 0.6);
+        // only some ring beams carry a lamp row: evenly dotted rows everywhere read as a starfield
+        let lit = if rng.chance(0.06) { rng.range(0.3, 0.7) } else { 0.0 };
         for g in 0..nl {
             let u = -w_face / 2.0 + 1.2 * s + (g as f32 + 0.5) * (w_face - 2.4 * s) / nl as f32;
             if rng.chance(lit) {
@@ -245,7 +246,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
         }
         // lit window bands and readouts, clustered rather than evenly spread
         let cluster_u = rng.range(-w_face / 2.0, w_face / 2.0);
-        for _ in 0..((rng.int(1, 5) as f32 * per) as u32).min(50) {
+        for _ in 0..((rng.int(0, 2) as f32 * per * 0.5) as u32).min(12) {
             let u = (cluster_u + rng.range(-1.0, 1.0) * rng.range(0.0, w_face * 0.5)).clamp(-w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s);
             let v = rng.range(s, h - 4.0 * s);
             let (nx, ny) = (rng.int(1, 8), rng.int(1, 3));
@@ -405,8 +406,8 @@ fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: f32) -> Structures 
     let mut rng = Rng::new(seed);
     let mut st = Structures {
         body: MeshBuilder::default(),
-        lamp: MeshBuilder::default(),
-        lamp_alt: MeshBuilder::default(),
+        lamp: MeshBuilder::glowing(),
+        lamp_alt: MeshBuilder::glowing(),
         smoke: MeshBuilder::default(),
         halo: MeshBuilder::default(),
     };
@@ -532,7 +533,7 @@ fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: f32) -> Structures 
 /// the platform, with dashed light strips running up their edges (white and amber).
 fn build_towers(apothem: f32) -> (MeshBuilder, MeshBuilder, MeshBuilder) {
     let w_face = face_width(apothem);
-    let (mut body, mut lamp, mut amber) = (MeshBuilder::default(), MeshBuilder::default(), MeshBuilder::default());
+    let (mut body, mut lamp, mut amber) = (MeshBuilder::default(), MeshBuilder::glowing(), MeshBuilder::glowing());
     let mut rng = Rng::new(909);
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
@@ -569,7 +570,7 @@ fn build_towers(apothem: f32) -> (MeshBuilder, MeshBuilder, MeshBuilder) {
             for du in [-tw / 2.0, tw / 2.0] {
                 let mut y = y0 + dash;
                 while y < y0 + span - dash {
-                    if rng.chance(0.75) {
+                    if rng.chance(0.3) {
                         let target = if warm { &mut amber } else { &mut lamp };
                         target.cuboid(f.p(u + du, y, w0 + td + r * 1.7), ax, [0.18, dash * 0.32, 0.06], WHITE);
                     }
@@ -705,7 +706,7 @@ fn build_ring(apothem: f32) -> (Mesh, Mesh) {
     let w_face = face_width(apothem);
     let depth = 15.0 * s;
     let mut m = MeshBuilder::default();
-    let mut l = MeshBuilder::default();
+    let mut l = MeshBuilder::glowing();
     let mut rng = Rng::new(77);
     for i in 0..SIDES {
         let f = Facet::new(i, apothem);
@@ -842,8 +843,8 @@ pub fn spawn_shaft(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
 /// They carry the close-up detail and the oppressive mass; the walls stay far away.
 fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats, apothem: f32) {
     let mut body = MeshBuilder::default();
-    let mut lamps = MeshBuilder::default();
-    let mut amber = MeshBuilder::default();
+    let mut lamps = MeshBuilder::glowing();
+    let mut amber = MeshBuilder::glowing();
     let mut rng = Rng::new(555);
     let reach = 3500.0;
     let mut lamps_live: Vec<Vec3> = Vec::new();
@@ -864,6 +865,81 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             while y < reach {
                 body.cylinder(c + off + Vec3::Y * y, c + off + Vec3::Y * (y + 1.6), r * 1.35, 12, DARK);
                 y += rng.range(18.0, 40.0);
+            }
+        }
+        // secondary detail where it can be seen: thin service cables running beside the
+        // main one, junction boxes with cooling fins, brackets and an occasional cage
+        {
+            let to_c = Vec3::new(c.x, 0.0, c.z).normalize();
+            let tang = Vec3::new(-to_c.z, 0.0, to_c.x);
+            let ns = rng.int(2, 4);
+            for j in 0..ns {
+                let ang = rng.range(0.0, TAU);
+                let o = (to_c * ang.cos() + tang * ang.sin()) * (r + rng.range(0.6, 1.4));
+                let rs = rng.range(0.12, 0.3);
+                let _ = j;
+                body.cylinder(c + o - Vec3::Y * 900.0, c + o + Vec3::Y * 900.0, rs, 6, GREY);
+            }
+            let mut y = -600.0 + rng.range(0.0, 40.0);
+            while y < 600.0 {
+                let face = if rng.chance(0.5) { to_c } else { tang };
+                let sgn = if rng.chance(0.5) { 1.0 } else { -1.0 };
+                let fax = [face.cross(Vec3::Y).normalize(), Vec3::Y, face * sgn];
+                match rng.int(0, 2) {
+                    0 => {
+                        // junction box with fins and a conduit back into the cable
+                        let (bw, bh, bd) = (rng.range(1.2, 2.2), rng.range(2.0, 4.0), rng.range(0.8, 1.4));
+                        let bc = c + Vec3::Y * y + face * sgn * (r * 1.35 + bd);
+                        body.cuboid(bc, fax, [bw, bh, bd], tone(&mut rng));
+                        let nf = rng.int(4, 8);
+                        for f in 0..nf {
+                            let fy = -bh + 0.4 + f as f32 * (2.0 * bh - 0.8) / nf as f32;
+                            body.cuboid(bc + Vec3::Y * fy + fax[2] * (bd + 0.15), fax, [bw * 0.9, 0.06, 0.15], DARK);
+                        }
+                        body.cylinder(bc - Vec3::Y * (bh + 1.5), bc - Vec3::Y * bh, 0.2, 6, DARK);
+                    }
+                    1 => {
+                        // bracket arm with a hanging counterweight
+                        let arm = rng.range(4.0, 9.0);
+                        let p0 = c + Vec3::Y * y + face * sgn * r;
+                        let p1 = p0 + face * sgn * arm;
+                        body.cuboid((p0 + p1) / 2.0, fax, [0.25, 0.5, arm / 2.0], DARK);
+                        body.cylinder(p0 - Vec3::Y * 3.0, p1, 0.15, 5, GREY);
+                        let drop = rng.range(4.0, 12.0);
+                        body.cylinder(p1, p1 - Vec3::Y * drop, 0.06, 4, GREY);
+                        body.cuboid(p1 - Vec3::Y * (drop + 0.8), fax, [0.7, 0.8, 0.7], tone(&mut rng));
+                    }
+                    _ => {
+                        // maintenance cage around the cable: rings and bars
+                        let cr = r * 1.35 + 2.0;
+                        let ch = rng.range(3.0, 5.0);
+                        let ring = |mb: &mut MeshBuilder, yy: f32| {
+                            let seg = 12;
+                            for i in 0..seg {
+                                let a0 = TAU * i as f32 / seg as f32;
+                                let a1 = TAU * (i + 1) as f32 / seg as f32;
+                                let q0 = c + Vec3::new(a0.cos() * cr, yy, a0.sin() * cr);
+                                let q1 = c + Vec3::new(a1.cos() * cr, yy, a1.sin() * cr);
+                                mb.cylinder(q0, q1, 0.08, 4, GREY);
+                            }
+                        };
+                        ring(&mut body, y);
+                        ring(&mut body, y + ch);
+                        ring(&mut body, y + ch * 0.5);
+                        for i in 0..8 {
+                            let a0 = TAU * i as f32 / 8.0;
+                            let q = c + Vec3::new(a0.cos() * cr, y, a0.sin() * cr);
+                            body.cylinder(q, q + Vec3::Y * ch, 0.08, 4, GREY);
+                        }
+                        // floor grating under it
+                        for i in 0..6 {
+                            let a0 = TAU * i as f32 / 6.0;
+                            let q = c + Vec3::new(a0.cos() * cr, y - 0.1, a0.sin() * cr);
+                            body.cylinder(c + Vec3::Y * (y - 0.1), q, 0.12, 4, DARK);
+                        }
+                    }
+                }
+                y += rng.range(25.0, 70.0);
             }
         }
         // a narrow flood high above, grazing down the cable
@@ -954,6 +1030,41 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             flip = !flip;
             t += bay;
         }
+        // gusset plates at every node, a pipe run along one side, hangers
+        let mut t = -half;
+        while t < half {
+            for a in [-w / 2.0, w / 2.0] {
+                for bb in [-h / 2.0, h / 2.0] {
+                    body.cuboid(p(t, a, bb), [dir, Vec3::Y, side], [1.6, 1.6, 0.25], DARK);
+                }
+            }
+            t += bay;
+        }
+        for (k, pr) in [(0.0f32, 0.9f32), (2.4, 0.6), (4.2, 0.45)] {
+            body.cylinder(p(-half, -w / 2.0 - 2.0 - k * 0.3, -h / 2.0 + 2.0 + k), p(half, -w / 2.0 - 2.0 - k * 0.3, -h / 2.0 + 2.0 + k), pr, 8, GREY);
+        }
+        let mut t = -half + bay * 0.5;
+        while t < half {
+            body.cuboid(p(t, -w / 2.0 - 1.2, -h / 2.0 + 3.0), [dir, Vec3::Y, side], [0.3, 4.0, 1.2], DARK);
+            t += bay * 2.0;
+        }
+        // a hanging service gondola under the girder
+        {
+            let gt = rng.range(-120.0, 120.0);
+            let top = p(gt, 0.0, -h / 2.0);
+            let drop = rng.range(30.0, 60.0);
+            let g0 = top - Vec3::Y * drop;
+            for sx in [-1.0f32, 1.0] {
+                body.cylinder(top + dir * sx * 3.0, g0 + dir * sx * 3.0 + Vec3::Y * 2.5, 0.12, 4, GREY);
+            }
+            body.cuboid(g0, [dir, Vec3::Y, side], [4.0, 1.25, 2.0], tone(&mut rng));
+            body.cuboid(g0 + Vec3::Y * 1.6, [dir, Vec3::Y, side], [4.1, 0.08, 2.1], DARK);
+            for sx in [-3.8f32, 0.0, 3.8] {
+                body.cylinder(g0 + dir * sx + side * 2.0 + Vec3::Y * 1.25, g0 + dir * sx + side * 2.0 + Vec3::Y * 2.4, 0.06, 4, GREY);
+            }
+            body.cylinder(g0 + side * 2.0 + Vec3::Y * 2.4 - dir * 3.8, g0 + side * 2.0 + Vec3::Y * 2.4 + dir * 3.8, 0.06, 4, GREY);
+            lamps_live.push(g0 - Vec3::Y * 2.0);
+        }
         // steam venting from the girder's pipes
         for t in [rng.range(-300.0f32, -80.0), rng.range(60.0, 260.0)] {
             let b = p(t, 0.0, h / 2.0 + 1.0);
@@ -1008,7 +1119,7 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
     let mut beams = MeshBuilder::default();
     let mut smoke = MeshBuilder::default();
     let mut vents = MeshBuilder::default();
-    let mut vent_lamps = MeshBuilder::default();
+    let mut vent_lamps = MeshBuilder::glowing();
     let sodium = Vec3::new(1.0, 0.55, 0.2);
     let cold = Vec3::new(0.85, 0.93, 1.0);
     for p in pilasters(apothem) {
@@ -1029,7 +1140,7 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
                 PitLight { mech, clin: cold },
                 SpotLight {
                     color: Color::linear_rgb(mech.x, mech.y, mech.z),
-                    intensity: 2.5e9,
+                    intensity: 6.0e9,
                     range: reach,
                     radius: 2.0,
                     inner_angle: 0.08,
@@ -1041,8 +1152,10 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
             ));
             let tint = if red { [1.0, 0.3, 0.2] } else { [1.0, 1.0, 1.0] };
             let len = reach * 0.6;
-            beams.cone(pos, dir, len, 2.5, len * 0.38f32.tan(), 20, [tint[0], tint[1], tint[2], 0.07], [tint[0], tint[1], tint[2], 0.0]);
-            billboard(&mut haze, pos + dir * 40.0, rng.range(50.0, 90.0), [tint[0], tint[1], tint[2], 0.35]);
+            let _ = (&mut beams, len);
+            // the flood lights a pocket of haze around its throw: a soft pool, not a cone
+            billboard(&mut haze, pos + dir * 30.0, rng.range(40.0, 70.0), [tint[0], tint[1], tint[2], 0.5]);
+            billboard(&mut haze, pos + dir * 140.0 + f.n * 40.0, rng.range(140.0, 240.0), [tint[0], tint[1], tint[2], 0.22]);
         }
     }
     // small red lamps: points of warning in the dark
