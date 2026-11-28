@@ -148,7 +148,7 @@ fn panel(c: &mut Canvas, rng: &mut Rng, x0: usize, y0: usize, x1: usize, y1: usi
         0..=1 if w > 30 && h > 20 => {
             let cell = (rng.range(0.9, 1.6) * PX_PER_M) as usize;
             let win = (cell as f32 * rng.range(0.4, 0.65)) as usize;
-            let warm = rng.chance(0.75);
+            let warm = rng.chance(0.3);
             let lit = rng.range(0.08, 0.35);
             let mut y = y0 + cell / 2;
             while y + win < y1 - 4 {
@@ -387,7 +387,7 @@ pub fn smoke_texture() -> Image {
         for x in 0..n {
             let (u, v) = (x as f32 / n as f32, y as f32 / n as f32);
             let f = fbm(u, v, 3, 5, 31);
-            let a = ((f - 0.28) * 1.9).clamp(0.0, 1.0);
+            let a = ((f - 0.12) * 2.0).clamp(0.0, 1.0);
             let g = 0.7 + 0.3 * f;
             px[y * n + x] = [g, g, g, a];
         }

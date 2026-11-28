@@ -220,24 +220,7 @@ fn setup(
             double_sided: true,
             ..default()
         }),
-        core: materials.add(StandardMaterial {
-            base_color: Color::linear_rgb(0.45, 0.55, 0.75),
-            base_color_texture: Some(glow.clone()),
-            unlit: true,
-            alpha_mode: AlphaMode::Add,
-            fog_enabled: false,
-            cull_mode: None,
-            ..default()
-        }),
-        core_low: materials.add(StandardMaterial {
-            base_color: Color::linear_rgb(0.5, 0.06, 0.03),
-            base_color_texture: Some(glow.clone()),
-            unlit: true,
-            alpha_mode: AlphaMode::Add,
-            fog_enabled: false,
-            cull_mode: None,
-            ..default()
-        }),
+        haze: additive(&mut materials, Some(glow.clone())),
     };
     // a soft light for the platform and the hands (the shaft lights only reach the panorama)
     commands.spawn((
@@ -267,7 +250,7 @@ fn setup(
 }
 
 fn fog_color(mood: f32) -> Color {
-    let mech = Vec3::new(0.03, 0.036, 0.046);
+    let mech = Vec3::new(0.13, 0.09, 0.055);
     let clin = Vec3::new(0.2, 0.23, 0.26);
     let c = mech.lerp(clin, mood);
     Color::srgb(c.x, c.y, c.z)
@@ -347,12 +330,12 @@ fn apply_mood(
         Color::srgb(c.x, c.y, c.z)
     };
     if let Some(mut m) = materials.get_mut(&mats.m.wall) {
-        m.base_color = mix(Vec3::new(0.27, 0.28, 0.3), Vec3::new(0.8, 0.81, 0.82));
+        m.base_color = mix(Vec3::new(0.35, 0.34, 0.33), Vec3::new(0.8, 0.81, 0.82));
         // roughness and metal come from the texture; the clinical wall is a bit smoother
         m.perceptual_roughness = 1.0 - 0.2 * t;
         m.metallic = 1.0 - 0.7 * t;
         // window lights: warm in the mechanical state, cool and softer when clinical
-        let e = Vec3::new(2.6, 1.8, 1.3).lerp(Vec3::new(0.8, 1.0, 1.3), t);
+        let e = Vec3::new(0.9, 0.75, 0.6).lerp(Vec3::new(0.8, 1.0, 1.3), t);
         m.emissive = LinearRgba::rgb(e.x, e.y, e.z);
     }
     let red = Vec3::new(1.0, 0.04, 0.02);
@@ -367,10 +350,10 @@ fn apply_mood(
         Color::linear_rgb(l.red * k, l.green * k, l.blue * k)
     };
     if let Some(mut m) = materials.get_mut(&mats.m.lamp) {
-        m.base_color = hdr(alarm(mix(Vec3::new(0.95, 0.9, 0.82), Vec3::new(0.85, 0.95, 1.0))), 4.0);
+        m.base_color = hdr(alarm(mix(Vec3::new(0.95, 0.88, 0.75), Vec3::new(0.85, 0.95, 1.0))), 2.0);
     }
     if let Some(mut m) = materials.get_mut(&mats.m.lamp_alt) {
-        m.base_color = hdr(alarm(mix(Vec3::new(1.0, 0.5, 0.12), Vec3::new(0.55, 0.85, 1.0))), 4.0);
+        m.base_color = hdr(alarm(mix(Vec3::new(1.0, 0.6, 0.3), Vec3::new(0.55, 0.85, 1.0))), 2.5);
     }
     for (h, (mc, cc, r)) in mats.m.skins.iter().zip(SKINS) {
         if let Some(mut m) = materials.get_mut(h) {
@@ -378,18 +361,21 @@ fn apply_mood(
             m.perceptual_roughness = r + 0.1 * (1.0 - t);
         }
     }
-    let lamp_col = alarm(mix(Vec3::new(1.0, 0.62, 0.3), Vec3::new(0.85, 0.93, 1.0))).to_linear();
+    let lamp_col = alarm(mix(Vec3::new(1.0, 0.55, 0.22), Vec3::new(0.85, 0.93, 1.0))).to_linear();
     let glow = |k: f32| LinearRgba::rgb(lamp_col.red * k, lamp_col.green * k, lamp_col.blue * k);
     if let Some(mut m) = materials.get_mut(&mats.m.halo) {
         m.base_color = glow(3.0).into();
     }
     if let Some(mut m) = materials.get_mut(&mats.m.beam) {
-        m.base_color = glow(0.6).into();
+        m.base_color = glow(0.35).into();
+    }
+    if let Some(mut m) = materials.get_mut(&mats.m.haze) {
+        m.base_color = glow(0.35).into();
     }
     if let Some(mut m) = materials.get_mut(&mats.m.smoke) {
         // smoke lit by the vents in the mechanical state, white steam in the clinical one
-        let c = mix(Vec3::new(0.55, 0.42, 0.3), Vec3::new(0.85, 0.9, 0.95)).to_srgba();
-        m.base_color = Color::srgba(c.red, c.green, c.blue, 0.8 - 0.15 * t);
+        let c = mix(Vec3::new(0.85, 0.62, 0.4), Vec3::new(0.9, 0.93, 0.96)).to_srgba();
+        m.base_color = Color::srgba(c.red, c.green, c.blue, 0.95);
     }
     for (mut l, p) in &mut lights {
         let c = alarm(mix(p.mech, p.clin)).to_linear();
@@ -403,8 +389,8 @@ fn apply_mood(
     }
     // the empty space beyond the last module is the fog colour: no visible end
     clear.0 = fog_color(t);
-    ambient.color = mix(Vec3::new(0.7, 0.8, 1.0), Vec3::new(0.9, 0.95, 1.0));
-    ambient.brightness = 45.0 + (150.0 - 45.0) * t;
+    ambient.color = mix(Vec3::new(1.0, 0.75, 0.5), Vec3::new(0.9, 0.95, 1.0));
+    ambient.brightness = 15.0 + (220.0 - 15.0) * t;
 }
 
 /// Smoke drifts upwards (the texture scrolls; the plume shape is in the vertex alpha).
