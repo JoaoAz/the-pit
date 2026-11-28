@@ -204,7 +204,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
         shell.cuboid(f.p(0.0, h - 1.3 * s, beam_d), ax, [w_face / 2.0 + 1.5 * s, 1.3 * s, beam_d], GREY);
         shell.cuboid(f.p(w_face / 2.0, h / 2.0, 2.6 * s), ax, [2.4 * s, h / 2.0, 2.6 * s], DARK);
         for (u0, u1) in partition(&mut rng, -w_face / 2.0 + 2.0 * s, w_face / 2.0 - 2.0 * s, 20.0, 120.0) {
-            if rng.chance(0.1) {
+            if rng.chance(0.04) {
                 shell_lamp.cuboid(f.p((u0 + u1) / 2.0, h - 2.65 * s, 2.0 * beam_d), ax, [(u1 - u0) / 2.0 - 2.0, 0.06 * s, 0.12 * s], [0.6, 0.6, 0.6, 1.0]);
             }
         }
@@ -270,7 +270,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
             let (vw, vh) = (vw * s, vh * s);
             let u = rng.range(-w_face / 2.0 + vw / 2.0 + 2.0 * s, w_face / 2.0 - vw / 2.0 - 2.0 * s);
             let vc = rng.range(3.0 * s, h - vh - 4.0 * s) + vh / 2.0;
-            if rng.chance(0.6) {
+            if rng.chance(0.3) {
                 mid_lamp_alt.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], WHITE);
             } else {
                 mid.cuboid(f.p(u, vc, 0.75 * s), ax, [vw / 2.0, vh / 2.0, 0.05 * s], HAZ_K);
@@ -294,7 +294,7 @@ fn build_module(apothem: f32, var: u64) -> ModuleMeshes {
             if rng.chance(0.4) {
                 hazard_band(&mut fine, &f, u - hu, u + hu, v + hv + 0.15 * s, 0.8 * s + 2.0 * hw + 0.05 * s, 0.15 * s, 0.8 * s);
             }
-            if rng.chance(0.5) {
+            if rng.chance(0.12) {
                 fine_lamp.cuboid(f.p(u + hu * 0.55, v + hv * 0.5, 0.8 * s + 2.0 * hw + 0.1 * s), ax, [hu * 0.25, 0.25 * s, 0.05 * s], WHITE);
             }
         }
@@ -380,11 +380,13 @@ fn plume(mb: &mut MeshBuilder, rng: &mut Rng, base: Vec3, height: f32, w0: f32, 
     let drift = right * rng.range(-0.3, 0.3) * height;
     let (u_off, rows) = (rng.f(), 10);
     let point = |x: f32, t: f32| base + right * x * (w0 + (w1 - w0) * t) + Vec3::Y * t * height + drift * t * t;
-    let alpha = |x: f32, t: f32| (1.0 - x * x) * (1.0 - t).powf(0.8) * (t * 8.0).min(1.0);
+    // squared falloff across, so the outline is a soft gradient and never the mesh edge
+    let alpha = |x: f32, t: f32| (1.0 - x * x).powi(2) * (1.0 - t).powf(0.8) * (t * 8.0).min(1.0);
     let uvs = |x: f32, t: f32| [u_off + x * 0.5 * (w0 + (w1 - w0) * t) / 60.0, -t * height / 60.0];
     for r in 0..rows {
         let (t0, t1) = (r as f32 / rows as f32, (r + 1) as f32 / rows as f32);
-        for (x0, x1) in [(-1.0f32, -0.5f32), (-0.5, 0.0), (0.0, 0.5), (0.5, 1.0)] {
+        for c in 0..8 {
+            let (x0, x1) = (-1.0 + c as f32 * 0.25, -0.75 + c as f32 * 0.25);
             let corners = [(x0, t0), (x1, t0), (x1, t1), (x0, t1)];
             mb.quad_uv(
                 corners.map(|(x, t)| point(x, t)),
@@ -483,7 +485,7 @@ fn build_structures(apothem: f32, y0: f32, seed: u64, smoke: f32) -> Structures 
                 flip = !flip;
                 u += bay;
             }
-            if rng.chance(0.6) {
+            if rng.chance(0.2) {
                 st.lamp.cuboid(f.p(u0 + len * rng.range(0.2, 0.8), v - thh / 2.0 - 0.3, w), ax, [2.0, 0.15, 0.6], WHITE);
             }
         }
@@ -723,7 +725,7 @@ fn build_ring(apothem: f32) -> (Mesh, Mesh) {
         }
         let nl = (w_face / (3.0 * s)) as i32;
         for k in 0..nl {
-            if rng.chance(0.5) {
+            if rng.chance(0.15) {
                 let u = -w_face * 0.45 + k as f32 * w_face * 0.9 / nl as f32;
                 l.cuboid(f.p(u, -3.05 * s, 4.5 * s + depth * 0.7), ax, [0.5 * s, 0.05 * s, 0.5 * s], WHITE);
             }
@@ -882,6 +884,7 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             }
             let mut y = -600.0 + rng.range(0.0, 40.0);
             while y < 600.0 {
+                // denser close to the platform's level, where it can be seen
                 let face = if rng.chance(0.5) { to_c } else { tang };
                 let sgn = if rng.chance(0.5) { 1.0 } else { -1.0 };
                 let fax = [face.cross(Vec3::Y).normalize(), Vec3::Y, face * sgn];
@@ -939,7 +942,7 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
                         }
                     }
                 }
-                y += rng.range(25.0, 70.0);
+                y += if y.abs() < 220.0 { rng.range(9.0, 22.0) } else { rng.range(25.0, 70.0) };
             }
         }
         // a narrow flood high above, grazing down the cable
@@ -1096,7 +1099,7 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
         commands.spawn((
             ShaftPart,
             PitLight { mech: Vec3::new(1.0, 0.55, 0.2), clin: Vec3::new(0.85, 0.93, 1.0) },
-            PointLight { color: Color::linear_rgb(1.0, 0.55, 0.2), intensity: 3.0e6, range: 140.0, radius: 0.5, shadow_maps_enabled: false, ..default() },
+            PointLight { color: Color::linear_rgb(1.0, 0.55, 0.2), intensity: 1.5e7, range: 220.0, radius: 0.5, shadow_maps_enabled: false, ..default() },
             Transform::from_translation(lp),
         ));
         billboard(&mut halo, lp, 1.6, WHITE);
@@ -1124,7 +1127,7 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
     let cold = Vec3::new(0.85, 0.93, 1.0);
     for p in pilasters(apothem) {
         let f = Facet::new(p.facet, apothem);
-        for _ in 0..rng.int(1, 3) {
+        for _ in 0..rng.int(2, 4) {
             let y = rng.range(-1.0f32, 1.0).powi(3) * 6.0 * MODULE_H;
             // fixture tucked against the pilaster's side, aimed along its face
             let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -1140,11 +1143,11 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
                 PitLight { mech, clin: cold },
                 SpotLight {
                     color: Color::linear_rgb(mech.x, mech.y, mech.z),
-                    intensity: 6.0e9,
-                    range: reach,
+                    intensity: 1.2e10,
+                    range: reach * 1.3,
                     radius: 2.0,
-                    inner_angle: 0.08,
-                    outer_angle: 0.38,
+                    inner_angle: 0.1,
+                    outer_angle: 0.5,
                     shadow_maps_enabled: false,
                     ..default()
                 },
@@ -1156,6 +1159,37 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
             // the flood lights a pocket of haze around its throw: a soft pool, not a cone
             billboard(&mut haze, pos + dir * 30.0, rng.range(40.0, 70.0), [tint[0], tint[1], tint[2], 0.5]);
             billboard(&mut haze, pos + dir * 140.0 + f.n * 40.0, rng.range(140.0, 240.0), [tint[0], tint[1], tint[2], 0.22]);
+        }
+    }
+    // wall washes near the platform's level: floods on the ring beams graze down the
+    // wall face, so the panels and pipes read as relief in long pools of light
+    for i in 0..SIDES {
+        let f = Facet::new(i, apothem);
+        for _ in 0..2 {
+            let u = rng.range(-w_face * 0.4, w_face * 0.4);
+            let y = Z_OFF + MODULE_H * rng.int(1, 4) as f32 - 6.0 * S;
+            let pos = f.p(u, y, 3.0 * S + 30.0);
+            let dir = (-Vec3::Y + f.n * -0.22).normalize();
+            let red = rng.chance(0.08);
+            let mech = if red { Vec3::new(1.0, 0.12, 0.04) } else { sodium };
+            commands.spawn((
+                ShaftPart,
+                far(),
+                PitLight { mech, clin: cold },
+                SpotLight {
+                    color: Color::linear_rgb(mech.x, mech.y, mech.z),
+                    intensity: 1.0e10,
+                    range: 600.0,
+                    radius: 3.0,
+                    inner_angle: 0.15,
+                    outer_angle: 0.6,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                Transform::from_translation(pos).looking_to(dir, f.n),
+            ));
+            billboard(&mut haze, pos + dir * 60.0, rng.range(80.0, 140.0), [1.0, 1.0, 1.0, 0.25]);
+            billboard(&mut halos, pos, 5.0, WHITE);
         }
     }
     // small red lamps: points of warning in the dark

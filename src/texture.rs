@@ -442,7 +442,7 @@ pub fn smoke_texture() -> Image {
             let lobes = (1.0 - (fbm(u, v, 2, 3, 77) * 2.0 - 1.0).abs()).powf(1.5);
             // soft and dense: no see-through holes (they read as cheese, not steam)
             let t = ((f * 0.6 + lobes * 0.6 - 0.2) / 0.8).clamp(0.0, 1.0);
-            let a = 0.35 + 0.65 * t * t * (3.0 - 2.0 * t);
+            let a = 0.18 + 0.82 * t * t * (3.0 - 2.0 * t);
             let g = 0.7 + 0.3 * f;
             px[y * n + x] = [g, g, g, a];
         }
