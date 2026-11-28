@@ -842,6 +842,10 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
     let mut amber = MeshBuilder::default();
     let mut rng = Rng::new(555);
     let reach = 3500.0;
+    let mut lamps_live: Vec<Vec3> = Vec::new();
+    let mut haze = MeshBuilder::default();
+    let mut halo = MeshBuilder::default();
+    let mut steam = MeshBuilder::default();
     // cables
     for k in 0..7 {
         let a = TAU * (k as f32 + rng.range(-0.3, 0.3)) / 7.0;
@@ -857,6 +861,13 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
                 body.cylinder(c + off + Vec3::Y * y, c + off + Vec3::Y * (y + 1.6), r * 1.35, 12, DARK);
                 y += rng.range(18.0, 40.0);
             }
+        }
+        // work lamps clamped to the cable: warm pools on its surface and a glow of haze
+        for _ in 0..2 {
+            let ly = rng.range(-180.0, 220.0);
+            let to_c = (Vec3::new(c.x, 0.0, c.z)).normalize();
+            let lp = c + Vec3::Y * ly + to_c * (r * 2.0 + 1.0) + Vec3::new(-to_c.z, 0.0, to_c.x) * r * 1.5;
+            lamps_live.push(lp);
         }
         // a few marker lights along the cable
         let mut y = rng.range(-400.0, -200.0);
@@ -918,6 +929,13 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             flip = !flip;
             t += bay;
         }
+        // steam venting from the girder's pipes
+        for t in [rng.range(-300.0f32, -80.0), rng.range(60.0, 260.0)] {
+            let b = p(t, 0.0, h / 2.0 + 1.0);
+            let (ph, pw) = (rng.range(120.0, 220.0), rng.range(40.0, 70.0));
+            plume(&mut steam, &mut rng, b, ph, 6.0, pw);
+            lamps_live.push(p(t, w / 2.0 + 3.0, h / 2.0 + 6.0));
+        }
         // sodium floods hung under the girder, close to the platform's side
         for t in [-60.0f32, 90.0] {
             let pos = p(t, 0.0, -h / 2.0 - 3.0);
@@ -938,7 +956,17 @@ fn spawn_suspended(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Ma
             ));
         }
     }
-    for (mb, mat) in [(body, &mats.wall), (lamps, &mats.lamp), (amber, &mats.lamp_alt)] {
+    for lp in lamps_live {
+        commands.spawn((
+            ShaftPart,
+            PitLight { mech: Vec3::new(1.0, 0.55, 0.2), clin: Vec3::new(0.85, 0.93, 1.0) },
+            PointLight { color: Color::linear_rgb(1.0, 0.55, 0.2), intensity: 3.0e6, range: 140.0, radius: 0.5, shadow_maps_enabled: false, ..default() },
+            Transform::from_translation(lp),
+        ));
+        billboard(&mut halo, lp, 1.6, WHITE);
+        billboard(&mut haze, lp, rng.range(25.0, 45.0), [1.0, 1.0, 1.0, 0.6]);
+    }
+    for (mb, mat) in [(body, &mats.wall), (lamps, &mats.lamp), (amber, &mats.lamp_alt), (haze, &mats.haze), (halo, &mats.halo), (steam, &mats.smoke)] {
         commands.spawn((ShaftPart, Mesh3d(meshes.add(mb.build())), MeshMaterial3d(mat.clone())));
     }
 }
@@ -988,7 +1016,7 @@ fn spawn_lights(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &Mats,
             ));
             let tint = if red { [1.0, 0.3, 0.2] } else { [1.0, 1.0, 1.0] };
             let len = reach * 0.6;
-            beams.cone(pos, dir, len, 2.5, len * 0.38f32.tan(), 20, [tint[0], tint[1], tint[2], 0.22], [tint[0], tint[1], tint[2], 0.0]);
+            beams.cone(pos, dir, len, 2.5, len * 0.38f32.tan(), 20, [tint[0], tint[1], tint[2], 0.07], [tint[0], tint[1], tint[2], 0.0]);
             billboard(&mut haze, pos + dir * 40.0, rng.range(50.0, 90.0), [tint[0], tint[1], tint[2], 0.35]);
         }
     }
